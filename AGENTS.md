@@ -2,6 +2,9 @@
 
 The user authorizes autonomous engineering and parallel agents. Coordinate ownership before edits.
 
+- **Session paused by the user on 2026-09-11.** Do not restart builds, apps, tests or agents until the user asks to continue. Read `RESUME.md` first when resuming.
+- **Use Sol agents:** the user explicitly requested `gpt-5.6-sol` for delegated implementation work. For new agents specify that model and use a partial/no-history fork as required by the collaboration API. Do not reuse the old inherited-model agents for implementation.
+
 - Use only the user-supplied workspace image. Never fetch ROMs, console/title keys, Nintendo firmware, or proprietary game assets. Never upload the image or extracted data.
 - Keep every proprietary/generated artifact under `.local/` (ignored), apart from the original image, which stays untouched. The installed app may keep verified runtime copies and saves in its private `~/Library/Application Support/MH4U Runtime/` folder to avoid requesting broad Desktop access. Never stage proprietary files or third-party binary artifacts.
 - Upstream Azahar releases can include embedded keys. Build the pinned source with `ENABLE_BUILTIN_KEYBLOB=OFF`; fetch source using the exclusion in `tools/build_core.py`. Do not fetch the excluded header or retain its Git blob.

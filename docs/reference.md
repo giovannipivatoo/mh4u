@@ -106,3 +106,14 @@ Regression command (uses the supplied local image and isolated state):
 ```sh
 python3 tools/mh4u.py verify --frames 300
 ```
+
+## Checkpoint after the Preferences correction
+
+On 2026-09-11 a Sol agent added
+`patches/azahar-reference-passive-microphone-enumeration.patch`, removing the
+synchronous authorization request from Preferences device enumeration. Actual
+microphone capture retains its permission check. The reference was rebuilt,
+installed and code-signature verified; no microphone permission was granted.
+Opening Preferences and its Audio page still needs visible CUA validation after
+the user resumes work. The earlier hang described above is historical evidence,
+not proof that the corrected build still hangs.

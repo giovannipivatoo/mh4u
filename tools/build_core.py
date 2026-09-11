@@ -115,6 +115,7 @@ def main():
     prepare_source()
     for patch in sorted((ROOT / 'patches').glob('azahar-*.patch')):
         apply_source_patch(SOURCE, patch)
+    apply_source_patch(SOURCE, ROOT / 'patches/libretro-touch-bounds.patch')
     if args.prepare_only:
         return
     ensure_build_tools()

@@ -1,0 +1,29 @@
+--- a/src/citra_qt/configuration/configure_audio.cpp
++++ b/src/citra_qt/configuration/configure_audio.cpp
+@@ -10,10 +10,6 @@
+ #include "common/settings.h"
+ #include "ui_configure_audio.h"
+ 
+-#if defined(__APPLE__)
+-#include "common/apple_authorization.h"
+-#endif
+-
+ ConfigureAudio::ConfigureAudio(bool is_powered_on, QWidget* parent)
+     : QWidget(parent), ui(std::make_unique<Ui::ConfigureAudio>()) {
+     ui->setupUi(this);
+@@ -208,15 +204,9 @@ void ConfigureAudio::UpdateAudioInputDevices(int input_index) {
+         static_cast<AudioCore::InputType>(ui->input_type_combo_box->itemData(input_index).toUInt());
+     auto& input_details = AudioCore::GetInputDetails(input_type);
+ 
+-#if defined(__APPLE__)
+-    if (input_details.real) {
+-        AppleAuthorization::CheckAuthorizationForMicrophone();
+-    }
+-#endif
+-
+     ui->input_device_combo_box->clear();
+     ui->input_device_combo_box->addItem(QString::fromUtf8(AudioCore::auto_device_name));
+ 
+     for (const auto& device : input_details.list_devices()) {
+         ui->input_device_combo_box->addItem(QString::fromStdString(device));
+     }

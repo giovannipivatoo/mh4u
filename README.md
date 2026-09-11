@@ -1,8 +1,10 @@
 # MH4U Apple Silicon runtime
 
+**Sessione in pausa su richiesta dell’utente.** Per ripartire, leggere [RESUME.md](RESUME.md); usare agenti Sol per il lavoro delegato.
+
 A local native macOS host specialized for the supplied **Monster Hunter 4 Ultimate (Europe)** image (`0004000000126100`, `CTR-P-BFGP`). It uses Azahar's ARMv6K → AArch64 JIT and 3DS services, with a Cocoa window, Metal presentation, runtime-selected spatial MetalFX, native audio and input.
 
-**Development status:** the image is fully extracted and hash-verified. Both CPU backends complete boot tests. GPU rendering now uses Azahar's Vulkan PICA backend through MoltenVK on the M2 Pro; the native host reads its output into Metal for presentation and spatial MetalFX. Boot/input tests reach the title screen, main menu, opening cinematic and playable sandship deck; loading a saved hunter and forward movement are verified. A software-rasterizer memory race and a GPU frame-completion handoff were corrected in the pinned core. The standalone reference created the test hunter/companion; the native runtime loaded that ordinary save. Combat, complete quests and saving/reloading gameplay progress remain unverified. This is a specialized native recompilation runtime, with an emulator core and dynamic ARM translation.
+**Development status:** the image is fully extracted and hash-verified. Both CPU backends complete boot tests. GPU rendering now uses Azahar's Vulkan PICA backend through MoltenVK on the M2 Pro; the native host reads its output into Metal for presentation and spatial MetalFX. Boot/input tests reach the title screen, main menu, opening cinematic and playable sandship deck; loading a saved hunter and forward movement are verified. A software-rasterizer memory race and a GPU frame-completion handoff were corrected in the pinned core. The native frontend also created its own character/companion through touch input and reloaded the ordinary save after restarting. Combat, complete quests and saving/reloading gameplay progress remain unverified. This is a specialized native recompilation runtime, with an emulator core and dynamic ARM translation.
 
 ## Local use
 

@@ -6,6 +6,11 @@ The accelerated graphics path is Azahar's Vulkan PICA rasterizer â†’ MoltenVK â†
 
 Spatial MetalFX runs where runtime support and scaler creation succeed. On macOS 26 and supported hardware, scaling uses real Metal 4 command buffers, residency tracking and completion feedback; the completed texture is then presented through a standard Metal render pass. A synthetic presentation test reads GPU output back to check color/channel correctness and resizing; the device probe separately checks Metal 4 queues/compiler and GPU execution. Temporal MetalFX/frame interpolation requires motion/depth inputs that the current framebuffer interface does not supply.
 
+The host paces frames against a persistent deadline that includes Cocoa event
+handling. A full-frame stall discards accumulated backlog; shorter sleep drift
+can be recovered without unlimited catch-up. Timing metrics separate core work,
+presentation, event handling and sleeping.
+
 The core also supplies process memory, scheduling, SVCs, IPC services, RomFS access, input and audio emulation. System services use HLE/open-source replacements; there is no firmware-download step. Network-facing build features and embedded keys are disabled. Only the main title partition is prepared; the cartridge's update partitions are unused.
 
 The reference is a pinned local Azahar source build (2126.1, commit `26e608f6fa292b27cda0ae8c84e148d17600a5e6`), available as both libretro cores and an installed standalone Qt application. JIT/interpreter comparisons test CPU-path differences, but share the same HLE and PICA implementations and cannot establish independent hardware accuracy. The Qt frontend provides a separate presentation/input comparison, not independent emulation. Captures and performance measurements must be labeled by the exact frame range, state, and renderer used.

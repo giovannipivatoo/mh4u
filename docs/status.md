@@ -1,5 +1,8 @@
 # Validation checkpoint — 2026-09-11
 
+**Paused by the user.** No test/runtime/build processes remain. Read `RESUME.md`
+before resuming; use Sol agents.
+
 Machine: Apple M2 Pro, arm64, macOS 26.5.2, Apple SDK 26.5.
 
 | Area | Verified result | Local evidence |
@@ -10,15 +13,22 @@ Machine: Apple M2 Pro, arm64, macOS 26.5.2, Apple SDK 26.5.
 | GPU game output | 300 offscreen Vulkan frames read back and presented with 300 Metal 4FX submissions | `.local/vulkan-gui-300.json` |
 | CPU comparison | Both JIT and interpreter finish 300 GPU-rendered boot frames; animated final captures differ | `.local/reports/boot-20260911T143758Z-t2lb9vl3/report.json` |
 | Title progression | Title screen, main menu, two distinct opening-cinematic scenes visible | `.local/vulkan/progression/report.json` |
+| Native save creation/reload | Created Native/Palico through native touch UI; clean exit; fresh process recognizes the ordinary save | `.local/native-creation/validation.json` |
 | Native gameplay | Repeated saved-character loading, sandship deck rendering, dialogue dismissal, forward movement with camera tracking | `.local/vulkan/gameplay/report.json` |
-| Native window | 6,500 Vulkan frames presented through Metal 4FX; final capture shows Hunter on sandship deck | `.local/native-playtest/gui6500.json`, `gui6500.png` |
+| Native window and pacing | 7,400 Vulkan frames and Metal 4FX presentations in 124.172 seconds (59.595 submitted FPS); final capture shows Hunter after movement | `.local/vulkan/pacing-hunter/movement7400.json`, `movement7400.png` |
 | Reference gameplay | Hunter/Palico saved; opening sandship deck and movement observed; later Qt Preferences hung on microphone authorization | `.local/reference/playable-validation.json` |
 | Software fallback | Same GPU-enabled core renders 300 software frames without loading MoltenVK | `.local/gpu-core-software-300.json` |
 | Installed app | Verified game/core/MoltenVK copies; installed executable completes GPU boot test | `.local/installed-gpu-test/`, private Application Support `installation.json` |
 | Input | Quick-tap, held-button, analog, touch-latch and focus-loss self-tests pass; real keyboard taps advance startup prompts | `--input-self-test`, native UI checks |
 | Boundaries | Synthetic corruption/path/encryption rejection tests pass; native forged-header rejection occurs before core loading; process network access denied | `tests/`, CTest, runtime metrics |
 
-These are functional tests, not a measured gameplay benchmark. Headless execution
+The 7,400-frame windowed replay covers startup, loading and initial movement,
+with 27 work frames over the 16.67ms budget and a 332ms maximum. It is not a
+steady-state hunt benchmark or a controlled speedup comparison. Pacing includes
+Cocoa work and uses persistent deadlines with bounded recovery after long stalls.
+The JSON reports separate core, presentation, event and sleep time.
+
+These are functional tests, not comprehensive gameplay compatibility coverage. Headless execution
 is unpaced, concurrent development processes were sometimes running, and startup
 UI does not exercise a full quest. Audio sample delivery and the native audio
 queue are implemented; audible quality has not been independently assessed.
@@ -32,3 +42,16 @@ gameplay scenes. Ordinary character-save loading and initial movement pass;
 a changed native save file alone does not prove that quest progress persisted. The
 standalone reference shares the same core and cannot establish real-hardware
 accuracy. Online features are outside this offline runtime's tested scope.
+
+MoltenVK teardown reports `MTLDevice.currentAllocatedSize`, which can include
+still-live native Metal presenter textures and scaler resources. That message
+alone does not establish a Vulkan resource leak. Cross-queue producer paths and
+GPU-hang recovery remain unexercised; bounded CLI tests use an external watchdog.
+
+Final interactive check before pause: native-created Native/Palico was reloaded;
+walking, stairs, NPC dialogue and camera controls worked. Looking at the Remobra
+flock triggered the Dah’ren Mohran encounter, whose geometry rendered visibly.
+The run was closed cleanly during the rope/bilge tutorial instruction. The
+encounter was not completed and its progress is not verified saved. Ordinary
+savedata, hashes, final runtime metrics and last capture were retained under
+`.local/checkpoints/20260911T152420Z` and `.local/native-creation/`.
