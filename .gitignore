@@ -1,0 +1,19 @@
+# User-owned proprietary inputs and every generated/third-party artifact.
+*.3ds
+*.cci
+*.cxi
+*.cia
+*.nds
+*.app
+*.bin
+*.romfs
+*.exefs
+*.code
+*.sav
+*.dmp
+*.keys
+*.pem
+.local/
+build/
+__pycache__/
+.DS_Store

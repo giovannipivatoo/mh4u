@@ -1,0 +1,61 @@
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -892,11 +892,8 @@
+ }
+ 
+ MemorySystem::PhysMemRegionInfo MemorySystem::GetPhysMemRegionInfo(PAddr address) {
+-    if (address >= phys_mem_region_info_cache.region_start &&
+-        address < phys_mem_region_info_cache.region_end) {
+-        return phys_mem_region_info_cache;
+-    }
+-
++    // Software rasterizer workers translate addresses concurrently. Keep the
++    // four-region lookup local so backing storage and its base cannot race.
+     constexpr std::array memory_areas = {
+         std::make_pair(VRAM_PADDR, VRAM_SIZE),
+         std::make_pair(DSP_RAM_PADDR, DSP_RAM_SIZE),
+@@ -913,28 +910,22 @@
+     if (area == memory_areas.end()) [[unlikely]] {
+         LOG_ERROR(HW_Memory, "Unknown GetPhysMemRegionInfo @ {:#08X} at PC {:#08X}", address,
+                   impl->GetPC());
+-        phys_mem_region_info_cache = PhysMemRegionInfo();
+-        return phys_mem_region_info_cache;
++        return {};
+     }
+ 
+     switch (area->first) {
+     case VRAM_PADDR:
+-        phys_mem_region_info_cache = {&impl->vram_mem, area->first, area->second};
+-        break;
++        return {&impl->vram_mem, area->first, area->second};
+     case DSP_RAM_PADDR:
+-        phys_mem_region_info_cache = {&impl->dsp_mem, area->first, area->second};
+-        break;
++        return {&impl->dsp_mem, area->first, area->second};
+     case FCRAM_PADDR:
+-        phys_mem_region_info_cache = {&impl->fcram_mem, area->first, area->second};
+-        break;
++        return {&impl->fcram_mem, area->first, area->second};
+     case N3DS_EXTRA_RAM_PADDR:
+-        phys_mem_region_info_cache = {&impl->n3ds_extra_ram_mem, area->first, area->second};
+-        break;
++        return {&impl->n3ds_extra_ram_mem, area->first, area->second};
+     default:
+         UNREACHABLE();
+     }
+ 
+-    return phys_mem_region_info_cache;
+ }
+ 
+ u8* MemorySystem::GetPhysicalPointer(PAddr address) {
+--- a/src/core/memory.h
++++ b/src/core/memory.h
+@@ -753,8 +753,6 @@
+     class Impl;
+     std::unique_ptr<Impl> impl;
+ 
+-    PhysMemRegionInfo phys_mem_region_info_cache{};
+-
+     friend class boost::serialization::access;
+     template <class Archive>
+     void serialize(Archive& ar, const unsigned int file_version);

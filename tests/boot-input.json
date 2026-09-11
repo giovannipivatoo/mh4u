@@ -1,0 +1,6 @@
+[
+  {"frame": 300, "duration": 10, "buttons": ["A"]},
+  {"frame": 600, "duration": 10, "buttons": ["A"]},
+  {"frame": 900, "duration": 10, "buttons": ["A"]},
+  {"frame": 1200, "duration": 10, "buttons": ["Start"]}
+]

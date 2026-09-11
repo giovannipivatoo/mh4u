@@ -1,0 +1,37 @@
+--- a/src/citra_meta/main.cpp
++++ b/src/citra_meta/main.cpp
+@@ -3,9 +3,16 @@
+ // Refer to the license.txt file included.
+ 
+ #include <iostream>
++#ifdef __APPLE__
++#include <TargetConditionals.h>
++#if TARGET_OS_OSX
++#include <sandbox.h>
++#endif
++#endif
+ 
+ #include "citra_cli/citra_cli.h"
+ #include "common/detached_tasks.h"
++#include "common/file_util.h"
+ #include "common/scope_exit.h"
+ 
+ #if !defined(ENABLE_QT)
+@@ -51,6 +58,17 @@
+ #endif
+ 
+ int main(int argc, char* argv[]) {
++#if defined(__APPLE__) && TARGET_OS_OSX
++    char* sandbox_error = nullptr;
++    if (sandbox_init("(version 1)(allow default)(deny network*)", 0, &sandbox_error) != 0) {
++        std::cerr << "Cannot enforce offline reference sandbox: "
++                  << (sandbox_error ? sandbox_error : "unknown error") << std::endl;
++        sandbox_free_error(sandbox_error);
++        return 1;
++    }
++    FileUtil::SetUserPath(FileUtil::GetHomeDirectory() +
++                          "/Library/Application Support/Azahar Reference/");
++#endif
+     Common::DetachedTasks detached_tasks;
+     SCOPE_EXIT({ detached_tasks.WaitForAllTasks(); });
+ 

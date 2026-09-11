@@ -1,0 +1,15 @@
+--- a/src/citra_libretro/libretro_vk.cpp
++++ b/src/citra_libretro/libretro_vk.cpp
+@@ -697,6 +697,11 @@
+         return;
+     }
+ 
+-    // CRITICAL: Use persistent struct to avoid stack lifetime issues!
++    // Flush only dispatches the renderer worker, while this frontend interface
++    // supplies no producer semaphore. Finish before handing the image to the
++    // host so a readback cannot overtake a not-yet-submitted render command.
++    scheduler.Finish();
++
++    // Keep the image descriptor alive until the host finishes using it.
+     // RetroArch may cache this pointer for frame duping during pause
+     persistent_libretro_image.image_view = static_cast<VkImageView>(frame->image_view);
