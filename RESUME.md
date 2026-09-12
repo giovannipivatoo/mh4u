@@ -67,8 +67,9 @@ La build installata inizializza automaticamente il DualSense Sony 054c:0ce6 Blue
 al cambio controller, poi continua a leggere il touch con GameController. Il log
 del gioco riaperto conferma il successo dell'inizializzazione. Tutti i 6 CTest e
 un nuovo boot finito di 300 frame sono passati anche con questa correzione.
-**Resta da confermare fisicamente cursore e selezione R3 nel gioco aggiornato**:
-la conferma diagnostica non equivale ancora a questa prova finale.
+**Verifica fisica nel gioco aggiornata: PASSATA.** L’utente ha risposto
+«Funzionano entrambi» alla prova del cursore che segue il dito e della selezione
+con R3. Questo conferma entrambi i comandi nel gioco, oltre alla diagnostica.
 Prove: `.local/gamecontroller-probe-result.txt`,
 `.local/touchcursor-validation/report.json`, `smoke-final.json`.
 
