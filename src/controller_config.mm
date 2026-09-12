@@ -2,11 +2,13 @@
 
 #import <Cocoa/Cocoa.h>
 #import <GameController/GameController.h>
+#import <IOKit/hid/IOHIDManager.h>
 #include <libretro.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 @interface MH4UControllerMenuTarget : NSObject
@@ -56,8 +58,10 @@ bool settingsIsOpen = false;
 bool releaseGate = true;
 bool lastHostPressed = false;
 __weak GCController *lastController = nil;
+TouchCursor currentTouchCursor;
 void (*toggleLowerCallback)() = nullptr;
 void (*fullscreenCallback)(bool) = nullptr;
+void (*settingsCallback)(bool) = nullptr;
 NSWindow *ownerWindow = nil;
 
 NSString *str(const char *s) { return [NSString stringWithUTF8String:s]; }
@@ -125,6 +129,84 @@ bool hostEdge(bool enabled, bool anyPhysicalPressed, bool hostPressed, bool &gat
 
 bool gameplayPress(bool pressed, bool isHostControl) { return pressed && !isHostControl; }
 
+TouchCursor cursorSample(TouchCursor cursor, bool available, bool touching,
+                         float x, float y, bool clickAllowed, bool r3Pressed) {
+    cursor.available = available;
+    cursor.pressed = available && clickAllowed && r3Pressed;
+    if (available && touching) {
+        cursor.x = std::clamp((x + 1.f) * .5f, 0.f, 1.f);
+        cursor.y = std::clamp((1.f - y) * .5f, 0.f, 1.f);
+    }
+    return cursor;
+}
+
+struct TouchSample {
+    bool available = false;
+    bool touching = false;
+    float x = 0.f;
+    float y = 0.f;
+};
+
+TouchSample readTouch(GCController *controller, GCExtendedGamepad *pad) {
+    GCControllerTouchpad *touchpad = controller.physicalInputProfile.touchpads.allValues.firstObject;
+    if (touchpad) {
+        touchpad.reportsAbsoluteTouchSurfaceValues = YES;
+        return {true, touchpad.touchState != GCTouchStateUp,
+                touchpad.touchSurface.xAxis.value, touchpad.touchSurface.yAxis.value};
+    }
+    GCControllerDirectionPad *surface = nil;
+    if ([pad isKindOfClass:GCDualSenseGamepad.class])
+        surface = ((GCDualSenseGamepad *)pad).touchpadPrimary;
+    else if ([pad isKindOfClass:GCDualShockGamepad.class])
+        surface = ((GCDualShockGamepad *)pad).touchpadPrimary;
+    if (!surface) return {};
+    float x = surface.xAxis.value, y = surface.yAxis.value;
+    // The legacy profile has no contact flag; zero is the only safe no-contact sample.
+    return {true, x != 0.f || y != 0.f, x, y};
+}
+
+void enableDualSenseEnhancedReports(GCExtendedGamepad *pad) {
+    if (![pad isKindOfClass:GCDualSenseGamepad.class]) return;
+    IOHIDManagerRef manager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    if (!manager) return;
+    NSDictionary *match = @{
+        @kIOHIDVendorIDKey: @0x054c,
+        @kIOHIDProductIDKey: @0x0ce6,
+        @kIOHIDPrimaryUsagePageKey: @1,
+        @kIOHIDPrimaryUsageKey: @5,
+    };
+    IOHIDManagerSetDeviceMatching(manager, (__bridge CFDictionaryRef)match);
+    IOReturn result = IOHIDManagerOpen(manager, kIOHIDOptionsTypeNone);
+    CFSetRef devices = result == kIOReturnSuccess ? IOHIDManagerCopyDevices(manager) : nullptr;
+    if (devices) {
+        for (id item in (__bridge NSSet *)devices) {
+            IOHIDDeviceRef device = (__bridge IOHIDDeviceRef)item;
+            CFStringRef transport = (CFStringRef)IOHIDDeviceGetProperty(device, CFSTR(kIOHIDTransportKey));
+            if (!transport || CFGetTypeID(transport) != CFStringGetTypeID() ||
+                CFStringCompare(transport, CFSTR(kIOHIDTransportBluetoothValue), 0) != kCFCompareEqualTo)
+                continue;
+            result = IOHIDDeviceOpen(device, kIOHIDOptionsTypeNone);
+            if (result == kIOReturnSuccess) {
+                // SDL's PS5 initialization uses feature 0x09 to enable full Bluetooth input reports.
+                // Only the handshake matters here; discard its identifying response.
+                uint8_t feature[64] = {0x09};
+                CFIndex length = sizeof(feature);
+                result = IOHIDDeviceGetReport(device, kIOHIDReportTypeFeature,
+                                               0x09, feature, &length);
+                if (result == kIOReturnSuccess)
+                    fprintf(stderr, "DualSense Bluetooth: enhanced touchpad reports requested\n");
+                IOHIDDeviceClose(device, kIOHIDOptionsTypeNone);
+            }
+            break;
+        }
+        CFRelease(devices);
+    }
+    IOHIDManagerClose(manager, kIOHIDOptionsTypeNone);
+    CFRelease(manager);
+    if (result != kIOReturnSuccess)
+        fprintf(stderr, "DualSense touchpad initialization unavailable (0x%08x)\n", result);
+}
+
 bool anyPressed(GCExtendedGamepad *pad) {
     for (const auto &item : physical) {
         GCControllerButtonInput *button = buttonFor(pad, item.key);
@@ -144,13 +226,15 @@ using namespace ControllerConfig;
 - (void)showController:(id)sender {
     (void)sender;
     settingsIsOpen = true;
+    if (settingsCallback) settingsCallback(true);
     releaseGate = true;
+    currentTouchCursor.pressed = false;
     @try {
         NSAlert *alert = [NSAlert new];
         alert.messageText = @"Controller Mapping";
         GCController *controller = GCController.controllers.firstObject;
         alert.informativeText = controller
-            ? [NSString stringWithFormat:@"Connected: %@\nA physical control used for the lower-screen toggle is suppressed from gameplay.", controller.vendorName ?: @"Game Controller"]
+            ? [NSString stringWithFormat:@"Connected: %@\nSlide on the touchpad to move the lower-screen cursor; press R3 to click. A physical control used for the lower-screen toggle is suppressed from gameplay.", controller.vendorName ?: @"Game Controller"]
             : @"No controller connected. Settings will apply when one connects.";
         [alert addButtonWithTitle:@"Save"];
         [alert addButtonWithTitle:@"Cancel"];
@@ -186,9 +270,13 @@ using namespace ControllerConfig;
         addRow(@"Circle Pad", @[@"Left Stick", @"Right Stick"], selectedStick(kCircleStick, "left"));
         addRow(@"C-Stick", @[@"Left Stick", @"Right Stick"], selectedStick(kCStick, "right"));
         const char *host = validatedChoice(kHostToggle, "touchpad", physical, std::size(physical));
+        bool reservesR3 = readTouch(controller, controller.extendedGamepad).available;
+        if (reservesR3 && !strcmp(host, "r3")) host = "touchpad";
         NSString *hostLabel = @"Touchpad Click";
         for (const auto &item : physical) if (!strcmp(item.key, host)) hostLabel = str(item.label);
-        addRow(@"Toggle Lower", buttonLabels, hostLabel);
+        NSMutableArray<NSString *> *hostLabels = [buttonLabels mutableCopy];
+        if (reservesR3) [hostLabels removeObject:@"R3"];
+        addRow(@"Toggle Lower", hostLabels, hostLabel);
         alert.accessoryView = view;
 
         if ([alert runModal] == NSAlertFirstButtonReturn) {
@@ -207,6 +295,7 @@ using namespace ControllerConfig;
         }
     } @finally {
         settingsIsOpen = false;
+        if (settingsCallback) settingsCallback(false);
         releaseGate = true;
         lastHostPressed = false;
         [ownerWindow makeKeyAndOrderFront:nil];
@@ -233,10 +322,11 @@ namespace {
 } // namespace
 
 void installMenu(NSMenu *mainMenu, NSWindow *gameWindow, void (*toggleLower)(),
-                 void (*setFullscreen)(bool)) {
+                 void (*setFullscreen)(bool), void (*settingsChanged)(bool)) {
     ownerWindow = gameWindow;
     toggleLowerCallback = toggleLower;
     fullscreenCallback = setFullscreen;
+    settingsCallback = settingsChanged;
     menuTarget = [MH4UControllerMenuTarget new];
 
     NSMenuItem *settingsRoot = [[NSMenuItem alloc] initWithTitle:@"Settings" action:nil keyEquivalent:@""];
@@ -261,23 +351,42 @@ void installMenu(NSMenu *mainMenu, NSWindow *gameWindow, void (*toggleLower)(),
 void poll(uint16_t &buttons, int16_t axes[2][2], bool enabled) {
     GCController *controller = GCController.controllers.firstObject;
     GCExtendedGamepad *pad = controller.extendedGamepad;
-    if (controller != lastController) { releaseGate = true; lastHostPressed = false; lastController = controller; }
+    if (controller != lastController) {
+        enableDualSenseEnhancedReports(pad);
+        releaseGate = true;
+        lastHostPressed = false;
+        lastController = controller;
+        currentTouchCursor.available = false;
+        currentTouchCursor.pressed = false;
+    }
     if (!enabled || settingsIsOpen || !pad) {
         hostEdge(false, false, false, releaseGate, lastHostPressed);
+        currentTouchCursor.available = false;
+        currentTouchCursor.pressed = false;
         return;
     }
+    TouchSample touch = readTouch(controller, pad);
     NSDictionary *mappings = storedMappings();
     const char *hostKey = validatedChoice(kHostToggle, "touchpad", physical, std::size(physical));
+    if (touch.available && !strcmp(hostKey, "r3")) hostKey = "touchpad";
     GCControllerButtonInput *hostButton = buttonFor(pad, hostKey);
-    if (!hostButton && !strcmp(hostKey, "touchpad")) hostButton = pad.rightThumbstickButton;
+    if (!hostButton && !touch.available && !strcmp(hostKey, "touchpad"))
+        hostButton = pad.rightThumbstickButton;
     bool hostPressed = hostButton.pressed;
     bool toggle = hostEdge(true, anyPressed(pad), hostPressed, releaseGate, lastHostPressed);
+    bool lowerVisible = lowerScreenVisible();
+    bool cursorAvailable = touch.available && lowerVisible && !releaseGate;
+    currentTouchCursor = cursorSample(currentTouchCursor, cursorAvailable,
+                                      cursorAvailable && touch.touching, touch.x, touch.y,
+                                      cursorAvailable,
+                                      pad.rightThumbstickButton.pressed);
     if (releaseGate) return;
     if (toggle && toggleLowerCallback) toggleLowerCallback();
     for (const auto &action : actions) {
         const char *key = mappingFor(action, mappings);
         GCControllerButtonInput *input = buttonFor(pad, key);
-        if (gameplayPress(input.pressed, input == hostButton)) buttons |= uint16_t(1u << action.retroId);
+        bool reservedR3 = touch.available && lowerVisible && input == pad.rightThumbstickButton;
+        if (gameplayPress(input.pressed, input == hostButton || reservedR3)) buttons |= uint16_t(1u << action.retroId);
     }
     const Physical sticks[] = {{"left", "Left Stick"}, {"right", "Right Stick"}};
     const char *circle = validatedChoice(kCircleStick, "left", sticks, 2);
@@ -305,8 +414,12 @@ bool lowerScreenVisible() {
 void setLowerScreenVisible(bool visible) {
     [NSUserDefaults.standardUserDefaults setBool:visible forKey:kLowerVisible];
     menuTarget.lowerItem.state = visible ? NSControlStateValueOn : NSControlStateValueOff;
+    currentTouchCursor.pressed = false;
+    releaseGate = true;
+    lastHostPressed = false;
 }
 bool settingsOpen() { return settingsIsOpen; }
+TouchCursor touchCursor() { return currentTouchCursor; }
 
 int selfTest() {
     NSDictionary *bad = @{ @"A": @42, @"B": @"invalid", @"X": @"square" };
@@ -321,6 +434,15 @@ int selfTest() {
     if (hostEdge(true, false, false, gate, last) || gate) return 8;
     if (!hostEdge(true, true, true, gate, last)) return 9;
     if (gameplayPress(true, true) || !gameplayPress(true, false)) return 10;
+    TouchCursor cursor;
+    cursor = cursorSample(cursor, true, true, -2.f, 2.f, true, true);
+    if (!cursor.available || !cursor.pressed || cursor.x != 0.f || cursor.y != 0.f) return 11;
+    cursor = cursorSample(cursor, true, false, 0.f, 0.f, false, true);
+    if (cursor.pressed || cursor.x != 0.f || cursor.y != 0.f) return 12;
+    cursor = cursorSample(cursor, true, true, 1.f, -1.f, true, false);
+    if (cursor.pressed || cursor.x != 1.f || cursor.y != 1.f) return 13;
+    cursor = cursorSample(cursor, false, false, 0.f, 0.f, true, true);
+    if (cursor.available || cursor.pressed || cursor.x != 1.f || cursor.y != 1.f) return 14;
     return 0;
 }
 

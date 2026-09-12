@@ -33,13 +33,55 @@ menu osservati. L'utente ha confermato esplicitamente che Cerchio avanza il gioc
 e il clic sul touchpad mostra/nasconde lo schermo inferiore. Questa verifica fisica
 è confermata dall'utente; non equivale a una prova di tutti i tasti rimappabili.
 
-Stato della prova corrente: `.local/controller-validation/state` (copia privata).
-Processo in `.local/controller-validation/installed-process.json`, limite 36.000
-frame e watchdog 900 secondi dal lancio. NON è una sessione normale illimitata.
-Controllare processi/exit prima di riaprire; non interrompere progressi dell'utente.
-L'app normale mantiene separati i suoi salvataggi canonici. Prova dettagliata in
-`.local/controller-validation/report.json`; nessun completamento missione o
-salvataggio dei progressi ancora verificato.
+## Cursore touchpad e R3 — 2026-09-12
+
+Richiesta successiva: usare il touchpad per muovere un cursore nel display inferiore
+e R3 per confermare il tocco. Implementato e installato. Coordinate assolute;
+il cursore resta fermo sollevando il dito, R3 tenuto consente trascinamenti. R3 è
+riservato al touch mentre il riquadro è visibile; un precedente Toggle Lower=R3
+viene interpretato come clic touchpad e normalizzato al salvataggio delle preferenze.
+Mouse e controller condividono un solo touch 3DS, con priorità a R3 premuto/latched.
+
+Cursore MSL bianco/nero sul solo overlay, dimensioni in punti anche su Retina.
+Si usa GCControllerTouchpad.touchState quando disponibile; il fallback pubblico
+DualSense/DualShock touchpadPrimary non espone contatto e ignora (0,0) per non
+spostare il cursore al rilascio. Limite: contatto esattamente centrale ambiguo nel
+fallback. Nessun HID privato, driver, permesso aggiunto o movimento del cursore OS.
+
+Tutti i 6 CTest e boot finito 300 frame superati; test su coordinate, bordi,
+rilascio R3, mouse, hide/focus/disconnect, readback centro e bordo del cursore.
+Revisione indipendente Sol senza difetti materiali. Cursore visibile osservato
+con CUA. Le prime due prove fisiche sono fallite: il cursore non si muoveva.
+Diagnosi: il DualSense Bluetooth inviava report semplici 0x01 di 10 byte, privi
+di touch; GameController restituiva valori fissi (-1,+1). La lettura pubblica
+IOKit del feature report 0x09 abilita report completi 0x31 di 78 byte. Dopo questa
+inizializzazione, osservati 1.755 callback continui e R3 corretto; l'utente conferma
+«i valori cambiano» nella finestra diagnostica. Nessun contenuto identificativo del
+feature report viene conservato o stampato.
+Revisione finale Sol: nessun problema nel caso verificato con un solo DualSense.
+Limite noto: con più DualSense Bluetooth, la scelta del primo dispositivo IOKit
+non è associata al controller GameController selezionato; quel caso non è supportato
+dalla verifica attuale e richiederà correggere la selezione prima di dichiararlo supportato.
+
+La build installata inizializza automaticamente il DualSense Sony 054c:0ce6 Bluetooth
+al cambio controller, poi continua a leggere il touch con GameController. Il log
+del gioco riaperto conferma il successo dell'inizializzazione. Tutti i 6 CTest e
+un nuovo boot finito di 300 frame sono passati anche con questa correzione.
+**Resta da confermare fisicamente cursore e selezione R3 nel gioco aggiornato**:
+la conferma diagnostica non equivale ancora a questa prova finale.
+Prove: `.local/gamecontroller-probe-result.txt`,
+`.local/touchcursor-validation/report.json`, `smoke-final.json`.
+
+**Sessione interattiva aggiornata aperta senza timer né watchdog:** processo e comando
+in `.local/touchcursor-validation/fixed-interactive-process.json`, log
+`fixed-interactive.log`. La prima sessione (`interactive-process.json`,
+`interactive.log`) era stata chiusa dall'utente prima della correzione.
+Usa `.local/touchcursor-validation/state`, copia dello stato privato precedente;
+non sovrascrive i salvataggi canonici dell'app. Controllare processi prima di
+riaprire, non interrompere il gioco dell'utente e non inviare input di gioco.
+L'ultima osservazione CUA mostrava Character Creation e il riquadro col cursore;
+non è una prova di completamento tutorial o salvataggio progressi. La vecchia prova
+`.local/controller-validation` con limite 36.000 frame è ormai conclusa.
 
 **Preferenza esplicita: usare agenti `gpt-5.6-sol` per l'implementazione parallela.**
 Leggere `AGENTS.md` e la skill ponytail prima di modificare codice. Non servono
@@ -103,7 +145,8 @@ storia come priva di quell'incidente.
   corda fino alla sentina e usare le scale per tornare sul ponte.
 
 **Non ancora verificati:** completamento dell'incontro/missione, combattimento completo,
-salvataggio e ricaricamento dei progressi della missione, controller fisico, qualità
+salvataggio e ricaricamento dei progressi della missione, copertura completa dei
+comandi del controller fisico, qualità
 audio ascoltata indipendentemente. Il solo cambiamento dell'hash di `user1` non
 prova un salvataggio dei progressi.
 

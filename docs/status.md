@@ -21,6 +21,7 @@ Machine: Apple M2 Pro, arm64, macOS 26.5.2, Apple SDK 26.5.
 | Software fallback | Same GPU-enabled core renders 300 software frames without loading MoltenVK | `.local/gpu-core-software-300.json` |
 | Installed app | Verified game/core/MoltenVK copies; installed executable completes GPU boot test | `.local/installed-gpu-test/`, private Application Support `installation.json` |
 | DualSense and display layout | Persistent remapping menu recognizes DualSense; upper LCD fullscreen and lower toggle overlay visibly checked; Retina touch alignment and final GPU composite checks pass. User confirms Circle advances the game and touchpad click toggles the lower screen | `.local/controller-validation/report.json`, `smoke.json` |
+| Touchpad cursor and R3 | Initial physical tests failed because Bluetooth simple reports omitted touch. Public IOKit feature 0x09 initialization restored 1,755 continuous GameController callbacks and correct R3; user confirms diagnostic values change. Automatic initialization installed and logged in reopened game; final in-game physical verification pending. All six CTests and 300-frame boot pass | `.local/touchcursor-validation/report.json`, `smoke-final.json`, `.local/gamecontroller-probe-result.txt` |
 | Input | Quick-tap, held-button, analog, touch-latch and focus-loss self-tests pass; real keyboard taps advance startup prompts | `--input-self-test`, native UI checks |
 | Boundaries | Synthetic corruption/path/encryption rejection tests pass; native forged-header rejection occurs before core loading; process network access denied | `tests/`, CTest, runtime metrics |
 
@@ -34,7 +35,9 @@ These are functional tests, not comprehensive gameplay compatibility coverage. H
 is unpaced, concurrent development processes were sometimes running, and startup
 UI does not exercise a full quest. Audio sample delivery and the native audio
 queue are implemented; audible quality has not been independently assessed.
-Physical controller hardware has not been tested. The touch bounds correction is
+Physical DualSense Circle and overlay-toggle controls are user-confirmed; touch motion
+and R3 are confirmed in the diagnostic, with final in-game verification pending.
+The touch bounds correction is
 covered by a test executing the actual core pointer branches against synthetic
 two-screen coordinates (`tests/test_touch_bounds.py`).
 

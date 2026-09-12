@@ -21,7 +21,7 @@ endif()
 add_executable(mh4u-runtime src/main.mm src/vulkan_bridge.mm src/controller_config.mm)
 target_include_directories(mh4u-runtime PRIVATE "${LIBRETRO_INCLUDE}" "${AZAHAR_SOURCE}/externals/vulkan-headers/include")
 target_compile_options(mh4u-runtime PRIVATE -fobjc-arc -Wall -Wextra)
-target_link_libraries(mh4u-runtime PRIVATE "-framework Cocoa" "-framework Metal" "-weak_framework MetalFX" "-framework QuartzCore" "-framework AudioToolbox" "-framework GameController")
+target_link_libraries(mh4u-runtime PRIVATE "-framework Cocoa" "-framework Metal" "-weak_framework MetalFX" "-framework QuartzCore" "-framework AudioToolbox" "-framework GameController" "-framework IOKit")
 configure_file(src/Info.plist.in "${CMAKE_BINARY_DIR}/MH4U-Info.plist" @ONLY)
 set(APP_CONTENTS "${CMAKE_BINARY_DIR}/MH4U Runtime.app/Contents")
 add_custom_target(native-app ALL

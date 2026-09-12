@@ -29,3 +29,14 @@ and the upper LCD aspect ratio. The presentation checks read back both cropped
 LCD textures and pixels of the final drawable, exercising the lower overlay,
 hidden overlay, resizing, and all three presentation paths. Captures from
 `--capture` retain the original dual-screen core canvas, not the window layout.
+
+Touchpad cursor checks cover normalized coordinate orientation and bounds, finger
+lift retention, R3 press/release latching, mouse coexistence, and hidden/focus/
+disconnect cancellation. The final drawable readback checks the cursor's white
+center and black outline in each Metal presentation mode. Synthetic checks do
+not substitute for physical touchpad movement and R3 confirmation by the user.
+
+On Bluetooth, the tested DualSense initially sent simple reports with no touch
+data. The runtime uses a public IOKit feature 0x09 read to enable enhanced reports
+at connection, then reads touch through GameController. Physical validation covers
+one Sony 054c:0ce6 controller; multiple-controller selection is not validated.

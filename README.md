@@ -20,11 +20,26 @@ python3 tools/mh4u.py verify --compare      # finite JIT/interpreter boot compar
 
 The source build uses installed CMake/Ninja, the Apple SDK and Homebrew OpenSSL. Extraction uses only the Python standard library. No account, emulator firmware, console key or game download is required. Everything in `.local/` and `build/` is private/generated and ignored by Git. The original `.3ds` stays untouched.
 
+## Graphics, pause and audio
+
+The native menus provide spatial MetalFX settings, pause/resume, and audio volume
+and mute. Graphics and audio preferences persist across launches. Opening settings
+temporarily pauses emulation; closing them preserves an existing manual pause.
+Pause keeps the current session in memory and is not a disk save or savestate.
+
+Temporal upscaling and frame generation are shown as unavailable. The current
+Vulkan-to-Metal interface supplies a finished color frame, without the motion and
+depth inputs needed by these features. Spatial MetalFX works on the 1× internal
+image; changing the presentation filter does not increase internal resolution.
+
 ## DualSense and screens
 
 The installed app starts with the upper 3DS screen in macOS full screen, preserving
 its 400:240 aspect ratio. Click the DualSense touchpad to show or hide the lower
-screen in a corner; it remains clickable with the mouse. **Settings → Controller…**
+screen in a corner. Slide a finger on the DualSense touchpad to position its visible
+cursor, then press **R3** (right-stick click) to touch that point. Lifting the finger
+keeps the cursor in place; holding R3 supports dragging. The mouse still works.
+R3 is reserved for touch while the lower screen is visible. **Settings → Controller…**
 (`⌘,`) remaps each 3DS button, the Circle Pad/C-Stick and **Toggle Lower**. Press
 **Save** to keep the configuration across launches. Defaults follow physical
 positions: Circle=A, Cross=B, Triangle=X, Square=Y; L1/R1=L/R, L2/R2=ZL/ZR,

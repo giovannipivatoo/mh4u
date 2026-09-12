@@ -38,6 +38,10 @@ static bool pointerPressed = false;
 static int16_t pointerX = 0, pointerY = 0;
 static uint8_t pointerLatchFrames = 0;
 static int16_t pointerLatchX = 0, pointerLatchY = 0;
+static bool controllerCursorAvailable = false, controllerTouchPressed = false;
+static float controllerCursorX = .5f, controllerCursorY = .5f;
+static uint8_t controllerTouchLatch = 0;
+static int16_t controllerTouchX = 0, controllerTouchY = 0;
 static uint16_t gamepadButtons = 0;
 static int16_t gamepadAxes[2][2]{};
 struct ReplayEvent {
@@ -90,6 +94,125 @@ static bool metal4Ready = false, useMetal4Scaler = false, metal4Enabled = true;
 static uint64_t metal4Submissions = 0;
 static bool fxEnabled = true, fxUsed = false;
 static NSUInteger cachedOutputWidth = 0, cachedOutputHeight = 0;
+static bool manuallyPaused = false, localSettingsOpen = false;
+static double audioVolume = 1.0;
+static bool audioMuted = false;
+static void clearNativeInput();
+static void present();
+
+static bool runtimePaused() { return manuallyPaused || localSettingsOpen || ControllerConfig::settingsOpen(); }
+
+static void invalidateScaler() {
+    cachedOutputWidth = cachedOutputHeight = 0;
+}
+
+static void applyAudioLevel() {
+    if (audioQueue) AudioQueueSetParameter(audioQueue, kAudioQueueParam_Volume, audioMuted ? 0.f : float(audioVolume));
+}
+
+static void setAudioPaused(bool paused) {
+    clearNativeInput();
+    if (!audioQueue) return;
+    audioAccepting = !paused;
+    {
+        std::lock_guard<std::mutex> lock(audioMutex);
+        audioSamples.clear();
+    }
+    if (paused) AudioQueuePause(audioQueue);
+    else { AudioQueueReset(audioQueue); AudioQueueStart(audioQueue, nullptr); applyAudioLevel(); }
+}
+
+static void settingsChanged(bool open) {
+    localSettingsOpen = open;
+    setAudioPaused(runtimePaused());
+}
+
+@interface MH4URuntimeMenuTarget : NSObject
+@property(nonatomic, strong) NSMenuItem *pauseItem;
+- (void)togglePause:(id)sender;
+- (void)showGraphics:(id)sender;
+- (void)showAudio:(id)sender;
+- (void)spatialChanged:(NSButton *)sender;
+- (void)volumeChanged:(NSSlider *)sender;
+- (void)muteChanged:(NSButton *)sender;
+@end
+
+static MH4URuntimeMenuTarget *runtimeMenuTarget;
+
+@implementation MH4URuntimeMenuTarget
+- (void)togglePause:(id)sender {
+    (void)sender;
+    manuallyPaused = !manuallyPaused;
+    self.pauseItem.title = manuallyPaused ? @"Resume Game" : @"Pause Game";
+    setAudioPaused(runtimePaused());
+}
+- (void)spatialChanged:(NSButton *)sender {
+    fxEnabled = sender.state == NSControlStateValueOn;
+    [NSUserDefaults.standardUserDefaults setBool:fxEnabled forKey:@"MetalFXSpatialEnabled"];
+    invalidateScaler();
+    if (!pixels.empty() && window) present();
+}
+- (void)showGraphics:(id)sender {
+    (void)sender;
+    settingsChanged(true);
+    @try {
+        NSAlert *alert = [NSAlert new];
+        alert.messageText = @"Graphics Settings";
+        alert.informativeText = @"Changes to spatial upscaling are applied immediately.";
+        [alert addButtonWithTitle:@"Done"];
+        NSView *view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 430, 126)];
+        NSButton *spatial = [NSButton checkboxWithTitle:@"MetalFX spatial upscaling" target:self action:@selector(spatialChanged:)];
+        spatial.frame = NSMakeRect(0, 96, 430, 24); spatial.state = fxEnabled ? NSControlStateValueOn : NSControlStateValueOff;
+        NSButton *temporal = [NSButton checkboxWithTitle:@"MetalFX temporal upscaling" target:nil action:nil];
+        temporal.frame = NSMakeRect(0, 62, 430, 24); temporal.enabled = NO;
+        NSTextField *temporalReason = [NSTextField labelWithString:@"Unavailable: the core does not provide motion vectors or depth."];
+        temporalReason.frame = NSMakeRect(22, 44, 408, 18); temporalReason.textColor = NSColor.secondaryLabelColor;
+        NSButton *frameGeneration = [NSButton checkboxWithTitle:@"Frame generation" target:nil action:nil];
+        frameGeneration.frame = NSMakeRect(0, 18, 430, 24); frameGeneration.enabled = NO;
+        NSTextField *frameReason = [NSTextField labelWithString:@"Unavailable: this presenter receives completed frames only."];
+        frameReason.frame = NSMakeRect(22, 0, 408, 18); frameReason.textColor = NSColor.secondaryLabelColor;
+        for (NSView *item in @[spatial, temporal, temporalReason, frameGeneration, frameReason]) [view addSubview:item];
+        alert.accessoryView = view;
+        [alert runModal];
+    } @finally {
+        settingsChanged(false);
+        [window makeKeyAndOrderFront:nil];
+    }
+}
+- (void)volumeChanged:(NSSlider *)sender {
+    audioVolume = sender.doubleValue / 100.0;
+    [NSUserDefaults.standardUserDefaults setDouble:audioVolume forKey:@"AudioVolume"];
+    applyAudioLevel();
+}
+- (void)muteChanged:(NSButton *)sender {
+    audioMuted = sender.state == NSControlStateValueOn;
+    [NSUserDefaults.standardUserDefaults setBool:audioMuted forKey:@"AudioMuted"];
+    applyAudioLevel();
+}
+- (void)showAudio:(id)sender {
+    (void)sender;
+    settingsChanged(true);
+    @try {
+        NSAlert *alert = [NSAlert new];
+        alert.messageText = @"Audio Settings";
+        alert.informativeText = @"Volume and mute are saved for future sessions.";
+        [alert addButtonWithTitle:@"Done"];
+        NSView *view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 360, 62)];
+        NSTextField *label = [NSTextField labelWithString:@"Volume"];
+        label.frame = NSMakeRect(0, 36, 58, 20);
+        NSSlider *slider = [NSSlider sliderWithValue:audioVolume * 100.0 minValue:0 maxValue:100 target:self action:@selector(volumeChanged:)];
+        slider.frame = NSMakeRect(62, 32, 298, 24); slider.continuous = YES;
+        NSButton *mute = [NSButton checkboxWithTitle:@"Mute audio" target:self action:@selector(muteChanged:)];
+        mute.frame = NSMakeRect(0, 0, 360, 24); mute.state = audioMuted ? NSControlStateValueOn : NSControlStateValueOff;
+        for (NSView *item in @[label, slider, mute]) [view addSubview:item];
+        alert.accessoryView = view;
+        [alert runModal];
+    } @finally {
+        settingsChanged(false);
+        [window makeKeyAndOrderFront:nil];
+    }
+}
+@end
 
 static void stopAudio() {
     audioAccepting = false;
@@ -178,6 +301,8 @@ static NSRect lowerScreenRect(NSSize size) {
 
 static void toggleLowerScreen() {
     lowerVisible = !lowerVisible;
+    controllerTouchPressed = false;
+    controllerTouchLatch = 0;
     pointerPressed = false;
     pointerLatchFrames = 0;
     ControllerConfig::setLowerScreenVisible(lowerVisible);
@@ -221,7 +346,30 @@ static void updateLowerPointer(NSPoint p, NSSize size, bool pressed) {
     }
 }
 
+static void updateControllerPointer(bool available, bool pressed, float x, float y) {
+    controllerCursorAvailable = available && std::isfinite(x) && std::isfinite(y);
+    if (!controllerCursorAvailable || !lowerVisible) {
+        controllerTouchPressed = false;
+        controllerTouchLatch = 0;
+        return;
+    }
+    controllerCursorX = std::clamp(x, 0.f, 1.f);
+    controllerCursorY = std::clamp(y, 0.f, 1.f);
+    controllerTouchPressed = pressed;
+    if (pressed || !controllerTouchLatch) {
+        // Clamp to the centers of the outermost LCD pixels, including at touchpad extremes.
+        double guestX = 40.0 + std::clamp(double(controllerCursorX) * 320.0, .5, 319.5);
+        double guestY = 240.0 + std::clamp(double(controllerCursorY) * 240.0, .5, 239.5);
+        controllerTouchX = guestX / 400.0 * 65534.0 - 32767.0;
+        controllerTouchY = guestY / 480.0 * 65534.0 - 32767.0;
+    }
+    if (pressed) controllerTouchLatch = 2;
+}
+
 static void clearNativeInput() {
+    controllerTouchPressed = false;
+    controllerTouchLatch = 0;
+    controllerCursorAvailable = false;
     std::fill(std::begin(keys), std::end(keys), false);
     std::fill(std::begin(keyLatchFrames), std::end(keyLatchFrames), 0);
     pointerPressed = false;
@@ -229,6 +377,7 @@ static void clearNativeInput() {
 }
 
 static void finishInputFrame() {
+    if (controllerTouchLatch) --controllerTouchLatch;
     for (auto &frames : keyLatchFrames) if (frames) --frames;
     if (pointerLatchFrames) --pointerLatchFrames;
 }
@@ -271,6 +420,8 @@ static void pollInput() {
     gamepadButtons = 0;
     std::memset(gamepadAxes, 0, sizeof(gamepadAxes));
     ControllerConfig::poll(gamepadButtons, gamepadAxes, window.isKeyWindow && NSApp.isActive);
+    const auto cursor = ControllerConfig::touchCursor();
+    updateControllerPointer(cursor.available, cursor.pressed, cursor.x, cursor.y);
 }
 
 static int16_t inputState(unsigned port, unsigned device, unsigned index, unsigned id) {
@@ -291,6 +442,11 @@ static int16_t inputState(unsigned port, unsigned device, unsigned index, unsign
         return gamepadAxes[index][id];
     }
     if (device == RETRO_DEVICE_POINTER && index == 0) {
+        if (controllerTouchPressed || controllerTouchLatch) {
+            if (id == RETRO_DEVICE_ID_POINTER_X) return controllerTouchX;
+            if (id == RETRO_DEVICE_ID_POINTER_Y) return controllerTouchY;
+            if (id == RETRO_DEVICE_ID_POINTER_PRESSED || id == RETRO_DEVICE_ID_POINTER_COUNT) return 1;
+        }
         bool latched = !pointerPressed && pointerLatchFrames != 0;
         if (id == RETRO_DEVICE_ID_POINTER_X) return latched ? pointerLatchX : pointerX;
         if (id == RETRO_DEVICE_ID_POINTER_Y) return latched ? pointerLatchY : pointerY;
@@ -338,6 +494,33 @@ static int inputSelfTest() {
     require(touch(RETRO_DEVICE_ID_POINTER_PRESSED) == 0, "hidden lower screen accepted touch");
     require(std::abs(imageRect(bounds).size.width / imageRect(bounds).size.height - 5.0 / 3.0) < 0.001,
         "top LCD aspect ratio changed");
+    lowerVisible = true;
+    updateControllerPointer(true, false, .25f, .75f);
+    require(touch(RETRO_DEVICE_ID_POINTER_PRESSED) == 0, "touchpad movement clicked without R3");
+    updateControllerPointer(true, true, 1.f, 1.f);
+    require(touch(RETRO_DEVICE_ID_POINTER_PRESSED) == 1 && controllerTouchX < 26213 && controllerTouchY < 32767,
+        "R3 endpoint left the lower LCD");
+    const int16_t clickedX = controllerTouchX;
+    updateControllerPointer(true, false, 0.f, 0.f);
+    require(touch(RETRO_DEVICE_ID_POINTER_X) == clickedX, "released R3 click moved before latch expired");
+    finishInputFrame(); finishInputFrame();
+    require(touch(RETRO_DEVICE_ID_POINTER_PRESSED) == 0, "R3 remained stuck after release");
+    setPointerState(true, 1234, 2345);
+    updateControllerPointer(true, false, .5f, .5f);
+    require(touch(RETRO_DEVICE_ID_POINTER_X) == 1234, "idle touchpad overwrote mouse touch");
+    updateControllerPointer(true, true, .5f, .5f);
+    require(std::abs(touch(RETRO_DEVICE_ID_POINTER_X)) <= 1, "R3 cursor center mapping wrong");
+    clearNativeInput();
+    require(touch(RETRO_DEVICE_ID_POINTER_PRESSED) == 0, "focus loss retained R3 touch");
+    updateControllerPointer(true, true, .5f, .5f);
+    lowerVisible = false;
+    updateControllerPointer(true, true, .5f, .5f);
+    require(touch(RETRO_DEVICE_ID_POINTER_PRESSED) == 0, "hidden overlay retained R3 touch");
+    lowerVisible = true;
+    updateControllerPointer(true, true, .5f, .5f);
+    updateControllerPointer(false, false, .5f, .5f);
+    require(touch(RETRO_DEVICE_ID_POINTER_PRESSED) == 0, "disconnect retained R3 touch");
+    lowerVisible = false;
     require(ControllerConfig::selfTest() == 0, "controller mapping or toggle edge regression");
     puts("{\"mode\":\"input-self-test\",\"passed\":true,\"minimum_tap_frames\":2}");
     return 0;
@@ -385,11 +568,16 @@ static void startAudio(double rate) {
     }
     if (AudioQueueStart(audioQueue, nullptr)) throw std::runtime_error("AudioQueueStart failed");
     audioAccepting = true;
+    applyAudioLevel();
 }
 
 static void setupWindow() {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if ([defaults objectForKey:@"MetalFXSpatialEnabled"]) fxEnabled = [defaults boolForKey:@"MetalFXSpatialEnabled"];
+    if ([defaults objectForKey:@"AudioVolume"]) audioVolume = std::clamp([defaults doubleForKey:@"AudioVolume"], 0.0, 1.0);
+    audioMuted = [defaults boolForKey:@"AudioMuted"];
     fprintf(stderr, "Application identity: bundle=%s running=%s pid=%d\n",
         NSBundle.mainBundle.bundleIdentifier.UTF8String ?: "(unbundled)",
         NSRunningApplication.currentApplication.bundleIdentifier.UTF8String ?: "(unbundled)",
@@ -415,7 +603,11 @@ static void setupWindow() {
         @"#include <metal_stdlib>\nusing namespace metal;\n"
          "struct V { float4 p [[position]]; float2 uv; };\n"
          "vertex V vert(uint i [[vertex_id]]) { float2 p=float2((i<<1)&2,i&2); return {float4(p*2-1,0,1),float2(p.x,1-p.y)}; }\n"
-         "fragment float4 frag(V v [[stage_in]],texture2d<float> t [[texture(0)]]) { constexpr sampler s(filter::linear); return float4(t.sample(s,v.uv).rgb,1); }"
+         "fragment float4 frag(V v [[stage_in]],texture2d<float> t [[texture(0)]],constant float4 &cursor [[buffer(0)]]) {"
+         " constexpr sampler s(filter::linear); float4 color=float4(t.sample(s,v.uv).rgb,1);"
+         " if(cursor.z>0) { float d=length((v.uv-cursor.xy)/cursor.zw);"
+         " if(d<1.5 || (d>=4 && d<=6)) return float4(1);"
+         " if(d<=7) return float4(0,0,0,1); } return color; }"
         options:nil error:&error];
     if (!library) throw std::runtime_error(error.localizedDescription.UTF8String);
     MTLRenderPipelineDescriptor *descriptor = [MTLRenderPipelineDescriptor new];
@@ -446,7 +638,21 @@ static void setupWindow() {
     quit.target = view;
     [applicationMenu addItem:quit];
     applicationItem.submenu = applicationMenu;
-    if (!presentationTesting) ControllerConfig::installMenu(menu, window, toggleLowerScreen, setFullscreen);
+    if (!presentationTesting) {
+        ControllerConfig::installMenu(menu, window, toggleLowerScreen, setFullscreen, settingsChanged);
+        runtimeMenuTarget = [MH4URuntimeMenuTarget new];
+        NSMenuItem *gameRoot = [[NSMenuItem alloc] initWithTitle:@"Game" action:nil keyEquivalent:@""];
+        NSMenu *gameMenu = [[NSMenu alloc] initWithTitle:@"Game"];
+        NSMenuItem *pause = [[NSMenuItem alloc] initWithTitle:@"Pause Game" action:@selector(togglePause:) keyEquivalent:@"p"];
+        pause.target = runtimeMenuTarget; runtimeMenuTarget.pauseItem = pause;
+        [gameMenu addItem:pause]; gameRoot.submenu = gameMenu; [menu addItem:gameRoot];
+        NSMenu *settings = [menu itemWithTitle:@"Settings"].submenu;
+        [settings insertItem:[NSMenuItem separatorItem] atIndex:0];
+        NSMenuItem *audio = [[NSMenuItem alloc] initWithTitle:@"Audio…" action:@selector(showAudio:) keyEquivalent:@""];
+        audio.target = runtimeMenuTarget; [settings insertItem:audio atIndex:0];
+        NSMenuItem *graphics = [[NSMenuItem alloc] initWithTitle:@"Graphics…" action:@selector(showGraphics:) keyEquivalent:@""];
+        graphics.target = runtimeMenuTarget; [settings insertItem:graphics atIndex:0];
+    }
     NSApp.mainMenu = menu;
     [window makeFirstResponder:view];
     [window center];
@@ -583,18 +789,25 @@ static void present() {
     id<MTLRenderCommandEncoder> encoder = [command renderCommandEncoderWithDescriptor:pass];
     [encoder setRenderPipelineState:pipeline];
     [encoder setViewport:MTLViewport{r.origin.x, r.origin.y, r.size.width, r.size.height, 0, 1}];
+    const float noCursor[4] = {};
+    [encoder setFragmentBytes:noCursor length:sizeof(noCursor) atIndex:0];
     [encoder setFragmentTexture:scalerProperties ? scaledTexture : inputTexture atIndex:0];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     if (lowerVisible) {
         NSRect lower = [window.contentView convertRectToBacking:lowerScreenRect(window.contentView.bounds.size)];
         [encoder setViewport:MTLViewport{lower.origin.x, size.height - NSMaxY(lower), lower.size.width, lower.size.height, 0, 1}];
+        if (controllerCursorAvailable) {
+            NSRect points = lowerScreenRect(window.contentView.bounds.size);
+            const float cursor[4] = {controllerCursorX, controllerCursorY, float(1.0 / points.size.width), float(1.0 / points.size.height)};
+            [encoder setFragmentBytes:cursor length:sizeof(cursor) atIndex:0];
+        }
         [encoder setFragmentTexture:lowerTexture atIndex:0];
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     }
     [encoder endEncoding];
     id<MTLBuffer> compositeReadback = nil;
     if (presentationTesting) {
-        compositeReadback = [metalDevice newBufferWithLength:1024 options:MTLResourceStorageModeShared];
+        compositeReadback = [metalDevice newBufferWithLength:1536 options:MTLResourceStorageModeShared];
         id<MTLBlitCommandEncoder> read = [command blitCommandEncoder];
         NSRect lower = [window.contentView convertRectToBacking:lowerScreenRect(window.contentView.bounds.size)];
         if (lowerVisible) {
@@ -614,6 +827,16 @@ static void present() {
                 sourceSize:MTLSizeMake(1, 1, 1) toBuffer:compositeReadback destinationOffset:i * 256
                 destinationBytesPerRow:256 destinationBytesPerImage:256];
         }
+        if (lowerVisible) {
+            double scale = lower.size.width / lowerScreenRect(window.contentView.bounds.size).size.width;
+            for (unsigned i = 0; i < 2; ++i) {
+                NSUInteger x = NSMidX(lower) + i * 3.0 * scale;
+                NSUInteger y = size.height - NSMidY(lower);
+                [read copyFromTexture:drawable.texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x, y, 0)
+                    sourceSize:MTLSizeMake(1, 1, 1) toBuffer:compositeReadback destinationOffset:(4 + i) * 256
+                    destinationBytesPerRow:256 destinationBytesPerImage:256];
+            }
+        }
         [read endEncoding];
     }
     [command presentDrawable:drawable];
@@ -625,6 +848,11 @@ static void present() {
         for (unsigned i = 0; i < (lowerVisible ? 4u : 2u); ++i)
             for (unsigned c = 0; c < 3; ++c)
                 compositePassed &= std::abs(int(static_cast<uint8_t *>(compositeReadback.contents)[i * 256 + c]) - expected[i][c]) <= 16;
+    }
+    if (compositeReadback && lowerVisible && command.status == MTLCommandBufferStatusCompleted) {
+        for (unsigned i = 0; i < 2; ++i)
+            for (unsigned c = 0; c < 3; ++c)
+                compositePassed &= std::abs(int(static_cast<uint8_t *>(compositeReadback.contents)[(4 + i) * 256 + c]) - (i ? 0 : 255)) <= 16;
     }
     if (command.status != MTLCommandBufferStatusCompleted) {
         failure = command.error ? command.error.localizedDescription.UTF8String : "Metal submission failed";
@@ -726,6 +954,7 @@ static int presentationSelfTest(uint64_t frames, const std::string &capturePath)
         NSEvent *event;
         while ((event = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:[NSDate distantPast] inMode:NSDefaultRunLoopMode dequeue:YES])) [NSApp sendEvent:event];
         [NSApp updateWindows];
+        updateControllerPointer(true, false, .5f, .5f);
         softwareVideo(pattern.data(), 400, 480, 1600);
         if (!failure.empty()) throw std::runtime_error(failure);
     }
