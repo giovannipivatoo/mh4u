@@ -1,7 +1,7 @@
-# Validation checkpoint — 2026-09-11
+# Validation checkpoint — 2026-09-12
 
-**Paused by the user.** No test/runtime/build processes remain. Read `RESUME.md`
-before resuming; use Sol agents.
+**Resumed explicitly by the user on 2026-09-12.** Read `RESUME.md` for persistent
+context; use Sol agents. Current gameplay validation uses a private save copy.
 
 Machine: Apple M2 Pro, arm64, macOS 26.5.2, Apple SDK 26.5.
 
@@ -17,8 +17,10 @@ Machine: Apple M2 Pro, arm64, macOS 26.5.2, Apple SDK 26.5.
 | Native gameplay | Repeated saved-character loading, sandship deck rendering, dialogue dismissal, forward movement with camera tracking | `.local/vulkan/gameplay/report.json` |
 | Native window and pacing | 7,400 Vulkan frames and Metal 4FX presentations in 124.172 seconds (59.595 submitted FPS); final capture shows Hunter after movement | `.local/vulkan/pacing-hunter/movement7400.json`, `movement7400.png` |
 | Reference gameplay | Hunter/Palico saved; opening sandship deck and movement observed; later Qt Preferences hung on microphone authorization | `.local/reference/playable-validation.json` |
+| Reference Preferences fix | Corrected build opens Preferences and Audio responsively without a microphone consent sheet; settings unchanged, clean exit | `.local/reference/preferences-validation-20260912.json` |
 | Software fallback | Same GPU-enabled core renders 300 software frames without loading MoltenVK | `.local/gpu-core-software-300.json` |
 | Installed app | Verified game/core/MoltenVK copies; installed executable completes GPU boot test | `.local/installed-gpu-test/`, private Application Support `installation.json` |
+| DualSense and display layout | Persistent remapping menu recognizes DualSense; upper LCD fullscreen and lower toggle overlay visibly checked; Retina touch alignment and final GPU composite checks pass. Physical button confirmation pending | `.local/controller-validation/report.json`, `smoke.json` |
 | Input | Quick-tap, held-button, analog, touch-latch and focus-loss self-tests pass; real keyboard taps advance startup prompts | `--input-self-test`, native UI checks |
 | Boundaries | Synthetic corruption/path/encryption rejection tests pass; native forged-header rejection occurs before core loading; process network access denied | `tests/`, CTest, runtime metrics |
 

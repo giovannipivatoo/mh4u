@@ -1,6 +1,6 @@
 # MH4U Apple Silicon runtime
 
-**Sessione in pausa su richiesta dell’utente.** Per ripartire, leggere [RESUME.md](RESUME.md); usare agenti Sol per il lavoro delegato.
+**Sessione ripresa su richiesta dell’utente il 2026-09-12.** Il contesto persistente è in [RESUME.md](RESUME.md); usare agenti Sol per il lavoro delegato.
 
 A local native macOS host specialized for the supplied **Monster Hunter 4 Ultimate (Europe)** image (`0004000000126100`, `CTR-P-BFGP`). It uses Azahar's ARMv6K → AArch64 JIT and 3DS services, with a Cocoa window, Metal presentation, runtime-selected spatial MetalFX, native audio and input.
 
@@ -19,6 +19,23 @@ python3 tools/mh4u.py verify --compare      # finite JIT/interpreter boot compar
 ```
 
 The source build uses installed CMake/Ninja, the Apple SDK and Homebrew OpenSSL. Extraction uses only the Python standard library. No account, emulator firmware, console key or game download is required. Everything in `.local/` and `build/` is private/generated and ignored by Git. The original `.3ds` stays untouched.
+
+## DualSense and screens
+
+The installed app starts with the upper 3DS screen in macOS full screen, preserving
+its 400:240 aspect ratio. Click the DualSense touchpad to show or hide the lower
+screen in a corner; it remains clickable with the mouse. **Settings → Controller…**
+(`⌘,`) remaps each 3DS button, the Circle Pad/C-Stick and **Toggle Lower**. Press
+**Save** to keep the configuration across launches. Defaults follow physical
+positions: Circle=A, Cross=B, Triangle=X, Square=Y; L1/R1=L/R, L2/R2=ZL/ZR,
+Options=Start and Create=Select. The control assigned to Toggle Lower is reserved
+for that action and does not also press a game button.
+
+**Settings → Show Lower Screen** (`⌘B`) works without a controller. **Start in Full
+Screen** controls the window mode and remembers the choice; Escape leaves full
+screen, and Escape in a window quits. The standard green window button also works.
+Controller mapping pauses game execution while the dialog is open; release the
+controller buttons/sticks before continuing after changing focus or settings.
 
 | Control | Keyboard |
 |---|---|

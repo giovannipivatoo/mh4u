@@ -22,3 +22,10 @@ build/mh4u-runtime --state-dir .local/test-state \
 The scripts are functional checks for this supplied revision and starting state,
 not deterministic replays or general gameplay bots. Inspect captures to establish
 which scene actually ran; a frame count or nonblack result alone is insufficient.
+
+The native input self-test also covers remapping validation, host-toggle edge and
+focus release gating, overlay touch coordinates, hidden-screen touch rejection,
+and the upper LCD aspect ratio. The presentation checks read back both cropped
+LCD textures and pixels of the final drawable, exercising the lower overlay,
+hidden overlay, resizing, and all three presentation paths. Captures from
+`--capture` retain the original dual-screen core canvas, not the window layout.

@@ -2,11 +2,44 @@
 
 ## Stato della sessione
 
-**In pausa su richiesta dell'utente dal 2026-09-11, ore 17:24 circa Europe/Rome.**
-Non avviare automaticamente altro lavoro. Riprendere solo quando l'utente lo chiede.
-Il runtime è stato chiuso con Command-Q; anche il relativo supervisore è terminato.
-L'inventario finale non contiene runtime, emulatori di riferimento o build del progetto
-in esecuzione. Tutti gli agenti risultano conclusi.
+**Ripresa esplicitamente dall'utente il 2026-09-12.** La precedente pausa risale al
+2026-09-11, ore 17:24 circa Europe/Rome. Il runtime era stato chiuso con Command-Q.
+Alla ripresa non risultavano runtime, riferimenti o build del progetto attivi.
+La verifica Sol delle Preferenze del riferimento è passata. La prova privata ha
+recuperato il cappello, risalito corda e sentina ed è tornata sul ponte. L'utente ha
+poi chiesto di giocare personalmente e ha spostato il lavoro su controller e schermi.
+Non inviare input di gioco mentre l'utente sta giocando; osservare e guidare.
+
+## Aggiornamento controller e schermi — 2026-09-12
+
+Implementati menu Cocoa **Settings → Controller…** (Cmd+,), rimappatura persistente
+DualSense per i 14 comandi 3DS, scelta degli stick e **Toggle Lower** (predefinito:
+clic touchpad). **Show Lower Screen** (Cmd+B) è il comando alternativo da menu.
+Fullscreen superiore 400:240 predefinito; schermo inferiore 320:240 in un riquadro
+in basso a destra, touch con mouse. Preferences NSUserDefaults `local.mh4u.runtime`.
+Il controllo assegnato al toggle non viene anche inviato al gioco. Pressioni tenute
+durante cambio focus/menu/riconnessione devono essere rilasciate prima di riprendere.
+Escape esce prima dal fullscreen; in finestra chiude. Green button e menu persistono
+la scelta fullscreen. Nessun cambio di renderer PICA.
+
+File nuovi: `src/controller_config.h/.mm`, implementati da Sol; integrazione e crop
+Metal in `src/main.mm`. La build firma il bundle locale con codesign ad-hoc.
+Test: tutti i 6 gruppi CTest passati dopo la correzione Retina; readback dei pixel
+della composizione finale, crop, overlay visibile/nascosto, coordinate touch e
+rilevamento pressioni testati. Boot finito 300 frame in `.local/controller-validation/smoke.json`.
+CUA ha visto **DualSense Wireless Controller**, menu completo e salvataggio della
+scelta R3; ripristinato Touchpad Click. Schermo superiore fullscreen e toggle da
+menu osservati. Prova fisica Cerchio/touchpad richiesta all'utente, risposta ancora
+pendente; non descriverla come confermata. L'utente ha comunque avanzato al ponte
+senza input di gioco inviato dall'agente in questa prova.
+
+Stato della prova corrente: `.local/controller-validation/state` (copia privata).
+Processo in `.local/controller-validation/installed-process.json`, limite 36.000
+frame e watchdog 900 secondi dal lancio. NON è una sessione normale illimitata.
+Controllare processi/exit prima di riaprire; non interrompere progressi dell'utente.
+L'app normale mantiene separati i suoi salvataggi canonici. Prova dettagliata in
+`.local/controller-validation/report.json`; nessun completamento missione o
+salvataggio dei progressi ancora verificato.
 
 **Preferenza esplicita: usare agenti `gpt-5.6-sol` per l'implementazione parallela.**
 Leggere `AGENTS.md` e la skill ponytail prima di modificare codice. Non servono
@@ -112,19 +145,21 @@ Ultimo lavoro Sol: `patches/azahar-reference-passive-microphone-enumeration.patc
 rimuove la richiesta sincrona del microfono durante l'enumerazione delle Preferenze.
 Il controllo per la cattura effettiva resta presente. Riferimento compilato, installato
 e firma verificata; SHA eseguibile `9d43db42342fd050036011d317f3c8d8392efd1626b9c75ef5358b95d626f30b`.
-**La verifica visiva delle Preferenze dopo la correzione è ancora da eseguire.**
+**Verifica visiva superata il 2026-09-12:** Preferenze e pagina Audio reattive,
+nessuna richiesta microfono osservata, nessuna impostazione o autorizzazione cambiata,
+uscita pulita. Prova: `.local/reference/preferences-validation-20260912.json`.
+La cattura effettiva del microfono non è stata provata.
 Il test testuale ridondante aggiunto inizialmente dall'agente è stato rimosso.
 
 ## Prossimi passi alla ripresa
 
-1. Verificare con CUA che le Preferenze del riferimento e la pagina Audio si aprano
-   senza bloccarsi né richiedere nuovi permessi microfono. Non concedere permessi.
+1. Completato: Preferenze/Audio riferimento verificate con CUA senza nuovi permessi.
 2. Riprendere su una copia privata del salvataggio `Native`; completare il tutorial,
    arrivare a un punto di salvataggio ordinario e verificare i progressi dopo riavvio.
 3. Solo dopo, approfondire combattimento, missioni e prestazioni in scene riproducibili.
    Evitare altre ottimizzazioni senza misure o bug concreti.
 
-Comandi disponibili, **da non eseguire durante la pausa**:
+Comandi disponibili:
 
 ```sh
 python3 tools/mh4u.py install

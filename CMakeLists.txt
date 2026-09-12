@@ -18,7 +18,7 @@ set(LIBRETRO_INCLUDE "${AZAHAR_SOURCE}/externals/libretro-common/libretro-common
 if(NOT EXISTS "${LIBRETRO_INCLUDE}/libretro.h")
   message(FATAL_ERROR "Run python3 tools/build_vulkan_core.py to prepare the pinned core first.")
 endif()
-add_executable(mh4u-runtime src/main.mm src/vulkan_bridge.mm)
+add_executable(mh4u-runtime src/main.mm src/vulkan_bridge.mm src/controller_config.mm)
 target_include_directories(mh4u-runtime PRIVATE "${LIBRETRO_INCLUDE}" "${AZAHAR_SOURCE}/externals/vulkan-headers/include")
 target_compile_options(mh4u-runtime PRIVATE -fobjc-arc -Wall -Wextra)
 target_link_libraries(mh4u-runtime PRIVATE "-framework Cocoa" "-framework Metal" "-weak_framework MetalFX" "-framework QuartzCore" "-framework AudioToolbox" "-framework GameController")
@@ -28,6 +28,7 @@ add_custom_target(native-app ALL
   COMMAND "${CMAKE_COMMAND}" -E make_directory "${APP_CONTENTS}/MacOS"
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:mh4u-runtime>" "${APP_CONTENTS}/MacOS/mh4u-runtime"
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_BINARY_DIR}/MH4U-Info.plist" "${APP_CONTENTS}/Info.plist"
+  COMMAND /usr/bin/codesign --force --sign - "${CMAKE_BINARY_DIR}/MH4U Runtime.app"
   DEPENDS mh4u-runtime)
 
 enable_testing()

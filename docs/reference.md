@@ -114,6 +114,8 @@ On 2026-09-11 a Sol agent added
 synchronous authorization request from Preferences device enumeration. Actual
 microphone capture retains its permission check. The reference was rebuilt,
 installed and code-signature verified; no microphone permission was granted.
-Opening Preferences and its Audio page still needs visible CUA validation after
-the user resumes work. The earlier hang described above is historical evidence,
-not proof that the corrected build still hangs.
+On 2026-09-12 a Sol agent visibly verified Preferences and its Audio page with CUA:
+both remained responsive, no microphone consent sheet appeared, no settings were
+saved, and the app quit cleanly. The executable hash matched the corrected build.
+Evidence: `.local/reference/preferences-validation-20260912.json`. Microphone
+capture was not tested. The earlier hang described above is historical evidence.

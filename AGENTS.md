@@ -2,7 +2,7 @@
 
 The user authorizes autonomous engineering and parallel agents. Coordinate ownership before edits.
 
-- **Session paused by the user on 2026-09-11.** Do not restart builds, apps, tests or agents until the user asks to continue. Read `RESUME.md` first when resuming.
+- **Session resumed explicitly by the user on 2026-09-12.** Read `RESUME.md` for the latest checkpoint and preserve private saves during validation.
 - **Use Sol agents:** the user explicitly requested `gpt-5.6-sol` for delegated implementation work. For new agents specify that model and use a partial/no-history fork as required by the collaboration API. Do not reuse the old inherited-model agents for implementation.
 
 - Use only the user-supplied workspace image. Never fetch ROMs, console/title keys, Nintendo firmware, or proprietary game assets. Never upload the image or extracted data.

@@ -7,6 +7,7 @@
 #include <CommonCrypto/CommonDigest.h>
 #include <libretro.h>
 #include "vulkan_bridge.h"
+#include "controller_config.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -70,7 +71,9 @@ static CAMetalLayer *metalLayer;
 static id<MTLDevice> metalDevice;
 static id<MTLCommandQueue> metalQueue;
 static id<MTLRenderPipelineState> pipeline;
-static id<MTLTexture> inputTexture, scaledTexture;
+static id<MTLTexture> inputTexture, scaledTexture, lowerTexture;
+static bool lowerVisible = false, presentationTesting = false, compositePassed = true;
+static unsigned displayWidth = 400, displayHeight = 240;
 static id<MTLFXSpatialScaler> scaler;
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
 static id<MTLFXSpatialScalerBase> scalerProperties;
@@ -161,10 +164,28 @@ static bool environment(unsigned command, void *data) {
 }
 
 static NSRect imageRect(NSSize size) {
-    double aspect = videoHeight ? double(videoWidth) / videoHeight : 400.0 / 480.0;
+    double aspect = double(displayWidth) / displayHeight;
     double width = std::min(double(size.width), double(size.height) * aspect);
     double height = width / aspect;
     return NSMakeRect((size.width - width) / 2, (size.height - height) / 2, width, height);
+}
+
+static NSRect lowerScreenRect(NSSize size) {
+    double width = std::min(double(size.width) * 0.36, double(size.height) * 0.48 * 4.0 / 3.0);
+    double margin = std::min(16.0, double(size.width) * 0.02);
+    return NSMakeRect(size.width - width - margin, margin, width, width * 0.75);
+}
+
+static void toggleLowerScreen() {
+    lowerVisible = !lowerVisible;
+    pointerPressed = false;
+    pointerLatchFrames = 0;
+    ControllerConfig::setLowerScreenVisible(lowerVisible);
+}
+
+static void setFullscreen(bool enabled) {
+    if (bool(window.styleMask & NSWindowStyleMaskFullScreen) != enabled)
+        [window toggleFullScreen:nil];
 }
 
 static void setKeyState(unsigned code, bool pressed) {
@@ -181,6 +202,22 @@ static void setPointerState(bool pressed, int16_t x, int16_t y) {
     if (pressed) {
         pointerLatchFrames = 2;
         pointerLatchX = x; pointerLatchY = y;
+    }
+}
+
+static void updateLowerPointer(NSPoint p, NSSize size, bool pressed) {
+    NSRect r = lowerScreenRect(size);
+    bool inside = lowerVisible && r.size.width > 0 && r.size.height > 0 && NSPointInRect(p, r);
+    if (inside) {
+        // The core still receives the original 400x480 canvas: lower LCD is x=40..359, y=240..479.
+        double x = 40.0 + (p.x - r.origin.x) / r.size.width * 320.0;
+        double y = 240.0 + (1.0 - (p.y - r.origin.y) / r.size.height) * 240.0;
+        int16_t px = std::clamp(x / 400.0 * 65534.0 - 32767.0, -32767.0, 32767.0);
+        int16_t py = std::clamp(y / 480.0 * 65534.0 - 32767.0, -32767.0, 32767.0);
+        setPointerState(pressed, px, py);
+    } else {
+        setPointerState(false, pointerX, pointerY);
+        pointerLatchFrames = 0;
     }
 }
 
@@ -201,7 +238,10 @@ static void finishInputFrame() {
 @implementation GameView
 - (BOOL)acceptsFirstResponder { return YES; }
 - (void)keyDown:(NSEvent *)event {
-    if (event.keyCode == 53) stopped = 1;
+    if (event.keyCode == 53) {
+        if (window.styleMask & NSWindowStyleMaskFullScreen) setFullscreen(false);
+        else stopped = 1;
+    }
     else setKeyState(event.keyCode, true);
 }
 - (void)keyUp:(NSEvent *)event { setKeyState(event.keyCode, false); }
@@ -209,16 +249,17 @@ static void finishInputFrame() {
     (void)note;
     clearNativeInput();
 }
+- (void)windowDidEnterFullScreen:(NSNotification *)note {
+    (void)note; if (!presentationTesting) ControllerConfig::setFullscreenPreferred(true);
+}
+- (void)windowDidExitFullScreen:(NSNotification *)note {
+    (void)note; if (!presentationTesting) ControllerConfig::setFullscreenPreferred(false);
+}
 - (BOOL)windowShouldClose:(NSWindow *)sender { (void)sender; stopped = 1; return YES; }
 - (void)quit:(id)sender { (void)sender; stopped = 1; }
 - (void)updatePointer:(NSEvent *)event pressed:(BOOL)pressed {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    NSRect r = imageRect(self.bounds.size);
-    if (r.size.width > 0 && r.size.height > 0) {
-        int16_t x = std::clamp((p.x - r.origin.x) / r.size.width * 65534.0 - 32767.0, -32767.0, 32767.0);
-        int16_t y = std::clamp((1.0 - (p.y - r.origin.y) / r.size.height) * 65534.0 - 32767.0, -32767.0, 32767.0);
-        setPointerState(pressed && NSPointInRect(p, r), x, y);
-    } else setPointerState(false, pointerX, pointerY);
+    updateLowerPointer(p, self.bounds.size, pressed);
 }
 - (void)mouseDown:(NSEvent *)event { [self updatePointer:event pressed:YES]; }
 - (void)mouseDragged:(NSEvent *)event { [self updatePointer:event pressed:YES]; }
@@ -229,23 +270,7 @@ static void pollInput() {
     if (headless) return;
     gamepadButtons = 0;
     std::memset(gamepadAxes, 0, sizeof(gamepadAxes));
-    GCExtendedGamepad *pad = GCController.controllers.firstObject.extendedGamepad;
-    if (!pad) return;
-    const struct { GCControllerButtonInput *button; unsigned id; } mapping[] = {
-        {pad.buttonA, RETRO_DEVICE_ID_JOYPAD_B}, {pad.buttonB, RETRO_DEVICE_ID_JOYPAD_A},
-        {pad.buttonX, RETRO_DEVICE_ID_JOYPAD_Y}, {pad.buttonY, RETRO_DEVICE_ID_JOYPAD_X},
-        {pad.leftShoulder, RETRO_DEVICE_ID_JOYPAD_L}, {pad.rightShoulder, RETRO_DEVICE_ID_JOYPAD_R},
-        {pad.leftTrigger, RETRO_DEVICE_ID_JOYPAD_L2}, {pad.rightTrigger, RETRO_DEVICE_ID_JOYPAD_R2},
-        {pad.buttonMenu, RETRO_DEVICE_ID_JOYPAD_START}, {pad.buttonOptions, RETRO_DEVICE_ID_JOYPAD_SELECT},
-        {pad.leftThumbstickButton, RETRO_DEVICE_ID_JOYPAD_L3}, {pad.rightThumbstickButton, RETRO_DEVICE_ID_JOYPAD_R3},
-        {pad.dpad.up, RETRO_DEVICE_ID_JOYPAD_UP}, {pad.dpad.down, RETRO_DEVICE_ID_JOYPAD_DOWN},
-        {pad.dpad.left, RETRO_DEVICE_ID_JOYPAD_LEFT}, {pad.dpad.right, RETRO_DEVICE_ID_JOYPAD_RIGHT}
-    };
-    for (const auto &m : mapping) if (m.button.isPressed) gamepadButtons |= 1u << m.id;
-    gamepadAxes[0][0] = pad.leftThumbstick.xAxis.value * 32767;
-    gamepadAxes[0][1] = -pad.leftThumbstick.yAxis.value * 32767;
-    gamepadAxes[1][0] = pad.rightThumbstick.xAxis.value * 32767;
-    gamepadAxes[1][1] = -pad.rightThumbstick.yAxis.value * 32767;
+    ControllerConfig::poll(gamepadButtons, gamepadAxes, window.isKeyWindow && NSApp.isActive);
 }
 
 static int16_t inputState(unsigned port, unsigned device, unsigned index, unsigned id) {
@@ -300,6 +325,20 @@ static int inputSelfTest() {
     setKeyState(40, true); setPointerState(true, 0, 0);
     clearNativeInput();
     require(a() == 0 && touch(RETRO_DEVICE_ID_POINTER_PRESSED) == 0, "focus loss did not clear input");
+    NSSize bounds = NSMakeSize(1000, 600);
+    NSRect lower = lowerScreenRect(bounds);
+    lowerVisible = true;
+    updateLowerPointer(NSMakePoint(NSMidX(lower), NSMidY(lower)), bounds, true);
+    require(touch(RETRO_DEVICE_ID_POINTER_PRESSED) == 1 && std::abs(touch(RETRO_DEVICE_ID_POINTER_X)) <= 1 &&
+        std::abs(touch(RETRO_DEVICE_ID_POINTER_Y) - 16383) <= 1, "overlay center mapped to wrong guest screen");
+    updateLowerPointer(NSMakePoint(10, 590), bounds, true);
+    require(touch(RETRO_DEVICE_ID_POINTER_PRESSED) == 0, "top screen or letterbox accepted touch");
+    lowerVisible = false;
+    updateLowerPointer(NSMakePoint(NSMidX(lower), NSMidY(lower)), bounds, true);
+    require(touch(RETRO_DEVICE_ID_POINTER_PRESSED) == 0, "hidden lower screen accepted touch");
+    require(std::abs(imageRect(bounds).size.width / imageRect(bounds).size.height - 5.0 / 3.0) < 0.001,
+        "top LCD aspect ratio changed");
+    require(ControllerConfig::selfTest() == 0, "controller mapping or toggle edge regression");
     puts("{\"mode\":\"input-self-test\",\"passed\":true,\"minimum_tap_frames\":2}");
     return 0;
 }
@@ -385,7 +424,7 @@ static void setupWindow() {
     descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
     pipeline = [metalDevice newRenderPipelineStateWithDescriptor:descriptor error:&error];
     if (!pipeline || !metalQueue) throw std::runtime_error("Metal presentation setup failed");
-    window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 600, 720)
+    window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1000, 600)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
         backing:NSBackingStoreBuffered defer:NO];
     window.title = @"MH4U Runtime";
@@ -395,7 +434,7 @@ static void setupWindow() {
     metalLayer = [CAMetalLayer layer];
     metalLayer.device = metalDevice;
     metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-    metalLayer.framebufferOnly = YES;
+    metalLayer.framebufferOnly = !presentationTesting;
     view.layer = metalLayer;
     window.contentView = view;
     window.delegate = view;
@@ -407,23 +446,32 @@ static void setupWindow() {
     quit.target = view;
     [applicationMenu addItem:quit];
     applicationItem.submenu = applicationMenu;
+    if (!presentationTesting) ControllerConfig::installMenu(menu, window, toggleLowerScreen, setFullscreen);
     NSApp.mainMenu = menu;
     [window makeFirstResponder:view];
     [window center];
     [window makeKeyAndOrderFront:nil];
     [NSApp finishLaunching];
     [NSApp activateIgnoringOtherApps:YES];
+    window.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
+    if (!presentationTesting) {
+        lowerVisible = ControllerConfig::lowerScreenVisible();
+        if (ControllerConfig::fullscreenPreferred()) setFullscreen(true);
+    }
     fprintf(stderr, "Metal presenter: %s. WASD move; arrows D-pad; J/K/U/I B/A/Y/X; Q/E L/R; Enter Start; Tab Select; click lower screen; Esc quits.\n", metalDevice.name.UTF8String);
 }
 
 static void present() {
+    displayWidth = videoWidth;
+    displayHeight = videoHeight / 2;
+    if (!displayWidth || !displayHeight) return;
     NSSize size = [window.contentView convertSizeToBacking:window.contentView.bounds.size];
     if (size.width < 1 || size.height < 1) return;
     metalLayer.drawableSize = size;
     NSRect r = imageRect(size);
     NSUInteger outputWidth = std::max(1.0, std::round(r.size.width));
     NSUInteger outputHeight = std::max(1.0, std::round(r.size.height));
-    if (!inputTexture || inputTexture.width != videoWidth || inputTexture.height != videoHeight ||
+    if (!inputTexture || inputTexture.width != displayWidth || inputTexture.height != displayHeight ||
         cachedOutputWidth != outputWidth || cachedOutputHeight != outputHeight) {
         cachedOutputWidth = outputWidth;
         cachedOutputHeight = outputHeight;
@@ -434,9 +482,9 @@ static void present() {
         if (@available(macOS 26.0, *)) scaler4 = nil;
 #endif
         scaledTexture = nil;
-        if (fxEnabled && outputWidth > videoWidth && outputHeight > videoHeight && [MTLFXSpatialScalerDescriptor supportsDevice:metalDevice]) {
+        if (fxEnabled && outputWidth > displayWidth && outputHeight > displayHeight && [MTLFXSpatialScalerDescriptor supportsDevice:metalDevice]) {
             MTLFXSpatialScalerDescriptor *fx = [MTLFXSpatialScalerDescriptor new];
-            fx.inputWidth = videoWidth; fx.inputHeight = videoHeight;
+            fx.inputWidth = displayWidth; fx.inputHeight = displayHeight;
             fx.outputWidth = outputWidth; fx.outputHeight = outputHeight;
             fx.colorTextureFormat = fx.outputTextureFormat = MTLPixelFormatBGRA8Unorm;
             fx.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
@@ -461,7 +509,7 @@ static void present() {
                 if (!scaledTexture) { scalerProperties = nil; useMetal4Scaler = false; }
             }
         }
-        MTLTextureDescriptor *in = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:videoWidth height:videoHeight mipmapped:NO];
+        MTLTextureDescriptor *in = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:displayWidth height:displayHeight mipmapped:NO];
         in.storageMode = MTLStorageModeShared;
         in.usage = MTLTextureUsageShaderRead | (scalerProperties ? scalerProperties.colorTextureUsage : 0);
         inputTexture = [metalDevice newTextureWithDescriptor:in];
@@ -477,14 +525,25 @@ static void present() {
         }
 #endif
     }
-    [inputTexture replaceRegion:MTLRegionMake2D(0, 0, videoWidth, videoHeight) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:videoWidth * 4];
+    [inputTexture replaceRegion:MTLRegionMake2D(0, 0, displayWidth, displayHeight) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:displayWidth * 4];
+    unsigned lowerWidth = displayWidth * 4 / 5;
+    if (!lowerTexture || lowerTexture.width != lowerWidth || lowerTexture.height != displayHeight) {
+        MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:lowerWidth height:displayHeight mipmapped:NO];
+        desc.storageMode = MTLStorageModeShared;
+        desc.usage = MTLTextureUsageShaderRead;
+        lowerTexture = [metalDevice newTextureWithDescriptor:desc];
+        if (!lowerTexture) { failure = "Metal lower screen allocation failed"; stopped = 1; return; }
+    }
+    if (lowerVisible || presentationTesting)
+        [lowerTexture replaceRegion:MTLRegionMake2D(0, 0, lowerWidth, displayHeight) mipmapLevel:0
+            withBytes:pixels.data() + (displayHeight * displayWidth + displayWidth / 10) * 4 bytesPerRow:displayWidth * 4];
     id<CAMetalDrawable> drawable = [metalLayer nextDrawable];
     if (!drawable) return;
     id<MTLCommandBuffer> command = [metalQueue commandBuffer];
     if (scalerProperties) {
         scalerProperties.colorTexture = inputTexture;
         scalerProperties.outputTexture = scaledTexture;
-        scalerProperties.inputContentWidth = videoWidth; scalerProperties.inputContentHeight = videoHeight;
+        scalerProperties.inputContentWidth = displayWidth; scalerProperties.inputContentHeight = displayHeight;
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
         if (@available(macOS 26.0, *)) {
             if (useMetal4Scaler) {
@@ -526,11 +585,47 @@ static void present() {
     [encoder setViewport:MTLViewport{r.origin.x, r.origin.y, r.size.width, r.size.height, 0, 1}];
     [encoder setFragmentTexture:scalerProperties ? scaledTexture : inputTexture atIndex:0];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    if (lowerVisible) {
+        NSRect lower = [window.contentView convertRectToBacking:lowerScreenRect(window.contentView.bounds.size)];
+        [encoder setViewport:MTLViewport{lower.origin.x, size.height - NSMaxY(lower), lower.size.width, lower.size.height, 0, 1}];
+        [encoder setFragmentTexture:lowerTexture atIndex:0];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    }
     [encoder endEncoding];
+    id<MTLBuffer> compositeReadback = nil;
+    if (presentationTesting) {
+        compositeReadback = [metalDevice newBufferWithLength:1024 options:MTLResourceStorageModeShared];
+        id<MTLBlitCommandEncoder> read = [command blitCommandEncoder];
+        NSRect lower = [window.contentView convertRectToBacking:lowerScreenRect(window.contentView.bounds.size)];
+        if (lowerVisible) {
+            NSPoint click = [window.contentView convertPointFromBacking:NSMakePoint(NSMidX(lower), NSMidY(lower))];
+            updateLowerPointer(click, window.contentView.bounds.size, true);
+            compositePassed &= pointerPressed && std::abs(pointerX) <= 1 && std::abs(pointerY - 16383) <= 1;
+            click = [window.contentView convertPointFromBacking:NSMakePoint(NSMaxX(lower) - 1, NSMidY(lower))];
+            updateLowerPointer(click, window.contentView.bounds.size, true);
+            compositePassed &= pointerPressed && pointerX > 25000;
+            clearNativeInput();
+        }
+        for (unsigned i = 0; i < (lowerVisible ? 4u : 2u); ++i) {
+            NSRect sample = i < 2 ? r : lower;
+            NSUInteger x = sample.origin.x + sample.size.width * (i % 2 ? 0.75 : 0.25);
+            NSUInteger y = size.height - (sample.origin.y + sample.size.height * (i < 2 ? 0.75 : 0.5));
+            [read copyFromTexture:drawable.texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x, y, 0)
+                sourceSize:MTLSizeMake(1, 1, 1) toBuffer:compositeReadback destinationOffset:i * 256
+                destinationBytesPerRow:256 destinationBytesPerImage:256];
+        }
+        [read endEncoding];
+    }
     [command presentDrawable:drawable];
     [command commit];
     // ponytail: one in-flight frame avoids shared-texture overwrite; pipeline when profiling warrants it.
     [command waitUntilCompleted];
+    if (compositeReadback && command.status == MTLCommandBufferStatusCompleted) {
+        const uint8_t expected[4][3] = {{0,0,255}, {0,255,0}, {255,0,0}, {255,255,255}};
+        for (unsigned i = 0; i < (lowerVisible ? 4u : 2u); ++i)
+            for (unsigned c = 0; c < 3; ++c)
+                compositePassed &= std::abs(int(static_cast<uint8_t *>(compositeReadback.contents)[i * 256 + c]) - expected[i][c]) <= 16;
+    }
     if (command.status != MTLCommandBufferStatusCompleted) {
         failure = command.error ? command.error.localizedDescription.UTF8String : "Metal submission failed";
         stopped = 1;
@@ -615,6 +710,8 @@ static void capture(const std::string &path) {
 
 static int presentationSelfTest(uint64_t frames, const std::string &capturePath) {
     if (headless) throw std::runtime_error("--self-test requires a display");
+    presentationTesting = true;
+    lowerVisible = true;
     setupWindow();
     const uint8_t colors[4][4] = {{0, 0, 255, 255}, {0, 255, 0, 255}, {255, 0, 0, 255}, {255, 255, 255, 255}};
     std::vector<uint8_t> pattern(400 * 480 * 4);
@@ -622,6 +719,7 @@ static int presentationSelfTest(uint64_t frames, const std::string &capturePath)
         for (unsigned x = 0; x < 400; ++x)
             std::memcpy(pattern.data() + (y * 400 + x) * 4, colors[(y >= 240) * 2 + (x >= 200)], 4);
     for (uint64_t i = 0; i < frames; ++i) {
+        lowerVisible = i != 1; // Exercise the hidden overlay as well as both visible screens.
         // Exercise downscale fallback and return to upscaling after a resize.
         if (i == 1) [window setContentSize:NSMakeSize(120, 144)];
         if (i == 2) [window setContentSize:NSMakeSize(600, 720)];
@@ -636,12 +734,12 @@ static int presentationSelfTest(uint64_t frames, const std::string &capturePath)
     id<MTLCommandBuffer> command = [metalQueue commandBuffer];
     id<MTLBlitCommandEncoder> blit = [command blitCommandEncoder];
     for (unsigned i = 0; i < 4; ++i)
-        [blit copyFromTexture:output sourceSlice:0 sourceLevel:0
-            sourceOrigin:MTLOriginMake(output.width * (1 + 2 * (i % 2)) / 4, output.height * (1 + 2 * (i / 2)) / 4, 0)
+        [blit copyFromTexture:(i < 2 ? output : lowerTexture) sourceSlice:0 sourceLevel:0
+            sourceOrigin:MTLOriginMake((i < 2 ? output.width : lowerTexture.width) * (1 + 2 * (i % 2)) / 4, (i < 2 ? output.height : lowerTexture.height) / 2, 0)
             sourceSize:MTLSizeMake(1, 1, 1) toBuffer:readback destinationOffset:i * 256
             destinationBytesPerRow:256 destinationBytesPerImage:256];
     [blit endEncoding]; [command commit]; [command waitUntilCompleted];
-    bool passed = command.status == MTLCommandBufferStatusCompleted && presentedFrames == frames;
+    bool passed = command.status == MTLCommandBufferStatusCompleted && presentedFrames == frames && compositePassed;
     for (unsigned i = 0; i < 4; ++i)
         for (unsigned c = 0; c < 3; ++c)
             passed = passed && std::abs(int(static_cast<uint8_t *>(readback.contents)[i * 256 + c]) - colors[i][c]) <= 16;
@@ -785,8 +883,10 @@ static void applyReplay(uint64_t frame) {
 
 int main(int argc, char **argv) {
     @autoreleasepool {
+        bool showStartupAlert = false;
         try {
             NSString *workspace = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MH4UWorkspace"];
+            showStartupAlert = argc == 1 && workspace.length;
             if (workspace.length) std::filesystem::current_path(workspace.fileSystemRepresentation);
             denyNetwork();
             std::string game = ".local/game/main.cxi", cpu = "jit", capturePath, inputScript, renderer = "vulkan";
@@ -939,6 +1039,13 @@ int main(int argc, char **argv) {
         } catch (const std::exception &error) {
             stopAudio();
             fprintf(stderr, "MH4U Runtime: %s\n", error.what());
+            if (showStartupAlert) {
+                NSAlert *alert = [[NSAlert alloc] init];
+                alert.alertStyle = NSAlertStyleCritical;
+                alert.messageText = @"MH4U Runtime error";
+                alert.informativeText = @(error.what());
+                [alert runModal];
+            }
             return 1;
         }
     }
