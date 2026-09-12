@@ -29,9 +29,9 @@ della composizione finale, crop, overlay visibile/nascosto, coordinate touch e
 rilevamento pressioni testati. Boot finito 300 frame in `.local/controller-validation/smoke.json`.
 CUA ha visto **DualSense Wireless Controller**, menu completo e salvataggio della
 scelta R3; ripristinato Touchpad Click. Schermo superiore fullscreen e toggle da
-menu osservati. Prova fisica Cerchio/touchpad richiesta all'utente, risposta ancora
-pendente; non descriverla come confermata. L'utente ha comunque avanzato al ponte
-senza input di gioco inviato dall'agente in questa prova.
+menu osservati. L'utente ha confermato esplicitamente che Cerchio avanza il gioco
+e il clic sul touchpad mostra/nasconde lo schermo inferiore. Questa verifica fisica
+è confermata dall'utente; non equivale a una prova di tutti i tasti rimappabili.
 
 Stato della prova corrente: `.local/controller-validation/state` (copia privata).
 Processo in `.local/controller-validation/installed-process.json`, limite 36.000

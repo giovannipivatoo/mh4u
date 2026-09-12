@@ -20,7 +20,7 @@ Machine: Apple M2 Pro, arm64, macOS 26.5.2, Apple SDK 26.5.
 | Reference Preferences fix | Corrected build opens Preferences and Audio responsively without a microphone consent sheet; settings unchanged, clean exit | `.local/reference/preferences-validation-20260912.json` |
 | Software fallback | Same GPU-enabled core renders 300 software frames without loading MoltenVK | `.local/gpu-core-software-300.json` |
 | Installed app | Verified game/core/MoltenVK copies; installed executable completes GPU boot test | `.local/installed-gpu-test/`, private Application Support `installation.json` |
-| DualSense and display layout | Persistent remapping menu recognizes DualSense; upper LCD fullscreen and lower toggle overlay visibly checked; Retina touch alignment and final GPU composite checks pass. Physical button confirmation pending | `.local/controller-validation/report.json`, `smoke.json` |
+| DualSense and display layout | Persistent remapping menu recognizes DualSense; upper LCD fullscreen and lower toggle overlay visibly checked; Retina touch alignment and final GPU composite checks pass. User confirms Circle advances the game and touchpad click toggles the lower screen | `.local/controller-validation/report.json`, `smoke.json` |
 | Input | Quick-tap, held-button, analog, touch-latch and focus-loss self-tests pass; real keyboard taps advance startup prompts | `--input-self-test`, native UI checks |
 | Boundaries | Synthetic corruption/path/encryption rejection tests pass; native forged-header rejection occurs before core loading; process network access denied | `tests/`, CTest, runtime metrics |
 
