@@ -18,6 +18,14 @@ set(LIBRETRO_INCLUDE "${AZAHAR_SOURCE}/externals/libretro-common/libretro-common
 if(NOT EXISTS "${LIBRETRO_INCLUDE}/libretro.h")
   message(FATAL_ERROR "Run python3 tools/build_vulkan_core.py to prepare the pinned core first.")
 endif()
+set(CORE_ARCHIVES "${CMAKE_SOURCE_DIR}/.local/core-vulkan-build")
+add_executable(savestate-path-probe tools/savestate_path_probe.cpp)
+target_include_directories(savestate-path-probe PRIVATE "${AZAHAR_SOURCE}/src"
+  "${AZAHAR_SOURCE}/externals/boost" "${AZAHAR_SOURCE}/externals/fmt/include")
+target_link_libraries(savestate-path-probe PRIVATE
+  "${CORE_ARCHIVES}/src/core/libcitra_core.a" "${CORE_ARCHIVES}/src/common/libcitra_common.a"
+  "${CORE_ARCHIVES}/externals/libboost_serialization.a" "${CORE_ARCHIVES}/externals/libboost_iostreams.a"
+  "${CORE_ARCHIVES}/externals/fmt/libfmt.a" "-framework Foundation" "-framework Security")
 add_executable(mh4u-runtime src/main.mm src/vulkan_bridge.mm src/controller_config.mm)
 target_include_directories(mh4u-runtime PRIVATE "${LIBRETRO_INCLUDE}" "${AZAHAR_SOURCE}/externals/vulkan-headers/include")
 target_compile_options(mh4u-runtime PRIVATE -fobjc-arc -Wall -Wextra)
@@ -33,6 +41,8 @@ add_custom_target(native-app ALL
 
 enable_testing()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME relocated-savestate-paths COMMAND "${Python3_EXECUTABLE}"
+  "${CMAKE_SOURCE_DIR}/tests/check_savestate_paths.py" "$<TARGET_FILE:savestate-path-probe>")
 add_test(NAME local-input-boundaries COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s tests -v)
 set_tests_properties(local-input-boundaries PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_test(NAME metal-device COMMAND metal-probe)

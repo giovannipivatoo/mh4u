@@ -40,3 +40,11 @@ On Bluetooth, the tested DualSense initially sent simple reports with no touch
 data. The runtime uses a public IOKit feature 0x09 read to enable enhanced reports
 at connection, then reads touch through GameController. Physical validation covers
 one Sony 054c:0ce6 controller; multiple-controller selection is not validated.
+
+`relocated-savestate-paths` serializes a real core SaveDataArchive in one process
+and restores it in a second process with a different user directory. It opens
+and writes a new file through the restored backend and requires that only the
+destination receives the exact bytes. This failed against the old core's raw
+absolute mount strings; it passes with the relative-path patch. The probe links
+the local GPU core archives, so rebuild that core after applying source patches.
+All fixtures are synthetic and temporary under `.local/`.

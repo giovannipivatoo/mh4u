@@ -13,6 +13,7 @@ Machine: Apple M2 Pro, arm64, macOS 26.5.2, Apple SDK 26.5.
 | GPU game output | 300 offscreen Vulkan frames read back and presented with 300 Metal 4FX submissions | `.local/vulkan-gui-300.json` |
 | CPU comparison | Both JIT and interpreter finish 300 GPU-rendered boot frames; animated final captures differ | `.local/reports/boot-20260911T143758Z-t2lb9vl3/report.json` |
 | Title progression | Title screen, main menu, two distinct opening-cinematic scenes visible | `.local/vulkan/progression/report.json` |
+| Relocated savestate paths (2026-09-13) | Real archive write regression failed before the fix and passes afterward; all 16 CTests pass. New-core 7,400-frame ship replay and relocated 600-frame load preserve the source tree, with no absolute source mounts in snapshots. Corrected core installed; old app/core retained for legacy snapshots, active game not restarted | `.local/savestate-path-validation/report.json`, `installation.json` |
 | Native save creation/reload | Created Native/Palico through native touch UI; clean exit; fresh process recognizes the ordinary save | `.local/native-creation/validation.json` |
 | Native gameplay | Repeated saved-character loading, sandship deck rendering, dialogue dismissal, forward movement with camera tracking | `.local/vulkan/gameplay/report.json` |
 | Native window and pacing | 7,400 Vulkan frames and Metal 4FX presentations in 124.172 seconds (59.595 submitted FPS); final capture shows Hunter after movement | `.local/vulkan/pacing-hunter/movement7400.json`, `movement7400.png` |

@@ -1,5 +1,56 @@
 # Ripresa del progetto MH4U
 
+## Isolamento dei savestate corretti — 2026-09-13
+
+Ripresa automatica del goal: ispezionato codice attuale, comprese le modifiche
+non committate delle altre sessioni. Il gioco build era già attivo (PID 622);
+nessun input OS inviato, nessun riavvio o chiusura della sessione utente.
+
+Scoperto un bug reale durante il replay del tutorial su una copia dello stato:
+IOFile rimappava i percorsi, ma nove campi di mount/factory degli archivi
+savedata/extdata/SDMC/NAND erano stringhe assolute. Dopo il load in un’altra
+cartella, aperture successive potevano scrivere nella cartella originale.
+Lo snapshot reale conservava 15 riferimenti al vecchio stato di test.
+Non dichiarare isolate le vecchie prove di snapshot trasferiti tra state-dir
+sulla sola base del parametro CLI. Entrambe le cartelle coinvolte erano di test;
+non sono stati caricati snapshot dei salvataggi canonici dell’utente.
+
+Correzione Sol in `patches/azahar-savestate-relative-paths.patch`: riusa
+`FileUtil::Path::make` per nove campi in sette header, senza nuovi backend.
+I builder applicano già tutte le patch azahar-*.patch. Applicazione ripetuta
+verificata; header delle chiavi escluso, built-in keys OFF.
+Regressione `relocated-savestate-paths` usa il vero SaveDataArchive, Boost,
+OpenFile e Write: prima scriveva nella sorgente e falliva; dopo scrive solo
+nella destinazione e passa. Tutti i **16 CTest passati**.
+
+Core corretto: `37f9a9230eb1efe0b6218fb58a0218f6a170f02d302af727d419aefac37816b4`.
+Replay nuovo di 7.400 frame da savedata ordinario privato; snapshot creato
+senza riutilizzare quello difettoso. Dopo copia e caricamento in un processo
+nuovo, 600 frame completati; scena nave ispezionata, sorgente sdmc/nand/sysdata
+invariata. Entrambi gli snapshot contengono 15 placeholder e zero percorsi
+assoluti delle due cartelle. È verifica di rilocazione e gameplay iniziale,
+non completamento di missione o benchmark.
+
+Installato con sostituzione atomica del core e firma app verificata; tutti i
+20 file canonici sdmc/nand invariati. Il processo di gioco già aperto continua
+con il core precedente fino alla chiusura. I vecchi snapshot RAM sono rifiutati
+dal controllo SHA del nuovo core; per recuperarli è conservata la coppia
+app/core precedente in `.local/savestate-path-validation/previous/`.
+Usare quel core esplicitamente e la cartella originale dello snapshot,
+mai una copia trasferita con il vecchio core. I salvataggi ordinari restano
+compatibili; caricare un vecchio snapshot e poi salvare nel gioco può comunque
+sostituire i progressi ordinari con quelli della sessione ripristinata.
+
+App installata verificata anche con 300 frame e un load dello snapshot spostato:
+uscita 0, sorgente invariata, zero percorsi assoluti e 15 placeholder.
+
+Prove: `.local/savestate-path-validation/report.json`, `ctest.log`,
+`installation.json`, `bootstrap-report.json`, `relocated-report.json`.
+Il vecchio replay `.local/quest-validation-20260913/` è stato sospeso alla
+sequenza successiva al tutorial telecamera; conserva diagnosi e catture.
+Prossimo passo: riprendere la progressione su snapshot generati dal core
+corretto e verificare una missione e il suo salvataggio ordinario.
+
 ## Stato della sessione
 
 **Ripresa esplicitamente dall'utente il 2026-09-12.** La precedente pausa risale al

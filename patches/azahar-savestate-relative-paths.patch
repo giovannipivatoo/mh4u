@@ -1,0 +1,150 @@
+diff --git a/src/core/file_sys/archive_extsavedata.h b/src/core/file_sys/archive_extsavedata.h
+--- a/src/core/file_sys/archive_extsavedata.h
++++ b/src/core/file_sys/archive_extsavedata.h
+@@ -10,6 +10,7 @@
+ #include <boost/serialization/export.hpp>
+ #include <boost/serialization/string.hpp>
+ #include "common/common_types.h"
++#include "common/file_util.h"
+ #include "core/file_sys/archive_backend.h"
+ #include "core/file_sys/artic_cache.h"
+ #include "core/hle/result.h"
+@@ -87,7 +88,7 @@ private:
+         ar& boost::serialization::base_object<ArchiveFactory>(*this);
+         ar& boost::serialization::base_object<ArticCacheProvider>(*this);
+         ar & type;
+-        ar & mount_point;
++        ar& FileUtil::Path::make(mount_point);
+     }
+     friend class boost::serialization::access;
+ };
+diff --git a/src/core/file_sys/archive_nand.h b/src/core/file_sys/archive_nand.h
+--- a/src/core/file_sys/archive_nand.h
++++ b/src/core/file_sys/archive_nand.h
+@@ -10,6 +10,7 @@
+ #include <boost/serialization/base_object.hpp>
+ #include <boost/serialization/export.hpp>
+ #include <boost/serialization/string.hpp>
++#include "common/file_util.h"
+ #include "core/file_sys/archive_backend.h"
+ #include "core/hle/result.h"
+ 
+@@ -50,7 +51,7 @@ protected:
+     template <class Archive>
+     void serialize(Archive& ar, const unsigned int) {
+         ar& boost::serialization::base_object<ArchiveBackend>(*this);
+-        ar & mount_point;
++        ar& FileUtil::Path::make(mount_point);
+         ar & archive_type;
+     }
+     friend class boost::serialization::access;
+@@ -103,7 +104,7 @@ private:
+     template <class Archive>
+     void serialize(Archive& ar, const unsigned int) {
+         ar& boost::serialization::base_object<ArchiveFactory>(*this);
+-        ar & nand_directory;
++        ar& FileUtil::Path::make(nand_directory);
+         ar & archive_type;
+     }
+     friend class boost::serialization::access;
+diff --git a/src/core/file_sys/archive_sdmc.h b/src/core/file_sys/archive_sdmc.h
+--- a/src/core/file_sys/archive_sdmc.h
++++ b/src/core/file_sys/archive_sdmc.h
+@@ -10,6 +10,7 @@
+ #include <boost/serialization/base_object.hpp>
+ #include <boost/serialization/export.hpp>
+ #include <boost/serialization/string.hpp>
++#include "common/file_util.h"
+ #include "core/file_sys/archive_backend.h"
+ #include "core/hle/result.h"
+ 
+@@ -47,7 +48,7 @@ protected:
+     template <class Archive>
+     void serialize(Archive& ar, const unsigned int) {
+         ar& boost::serialization::base_object<ArchiveBackend>(*this);
+-        ar & mount_point;
++        ar& FileUtil::Path::make(mount_point);
+     }
+     friend class boost::serialization::access;
+ };
+@@ -79,7 +80,7 @@ private:
+     template <class Archive>
+     void serialize(Archive& ar, const unsigned int) {
+         ar& boost::serialization::base_object<ArchiveFactory>(*this);
+-        ar & sdmc_directory;
++        ar& FileUtil::Path::make(sdmc_directory);
+     }
+     friend class boost::serialization::access;
+ };
+diff --git a/src/core/file_sys/archive_sdmcwriteonly.h b/src/core/file_sys/archive_sdmcwriteonly.h
+--- a/src/core/file_sys/archive_sdmcwriteonly.h
++++ b/src/core/file_sys/archive_sdmcwriteonly.h
+@@ -65,7 +65,7 @@ private:
+     template <class Archive>
+     void serialize(Archive& ar, const unsigned int) {
+         ar& boost::serialization::base_object<ArchiveFactory>(*this);
+-        ar & sdmc_directory;
++        ar& FileUtil::Path::make(sdmc_directory);
+     }
+     friend class boost::serialization::access;
+ };
+diff --git a/src/core/file_sys/archive_source_sd_savedata.h b/src/core/file_sys/archive_source_sd_savedata.h
+--- a/src/core/file_sys/archive_source_sd_savedata.h
++++ b/src/core/file_sys/archive_source_sd_savedata.h
+@@ -8,6 +8,7 @@
+ #include <string>
+ #include <boost/serialization/export.hpp>
+ #include <boost/serialization/string.hpp>
++#include "common/file_util.h"
+ #include "core/file_sys/archive_backend.h"
+ #include "core/file_sys/artic_cache.h"
+ #include "core/hle/result.h"
+@@ -51,7 +52,7 @@ private:
+     template <class Archive>
+     void serialize(Archive& ar, const unsigned int) {
+         ar& boost::serialization::base_object<ArticCacheProvider>(*this);
+-        ar & mount_point;
++        ar& FileUtil::Path::make(mount_point);
+     }
+     friend class boost::serialization::access;
+ };
+diff --git a/src/core/file_sys/archive_systemsavedata.h b/src/core/file_sys/archive_systemsavedata.h
+--- a/src/core/file_sys/archive_systemsavedata.h
++++ b/src/core/file_sys/archive_systemsavedata.h
+@@ -9,6 +9,7 @@
+ #include <boost/serialization/export.hpp>
+ #include <boost/serialization/string.hpp>
+ #include "common/common_types.h"
++#include "common/file_util.h"
+ #include "core/file_sys/archive_backend.h"
+ #include "core/file_sys/artic_cache.h"
+ #include "core/hle/result.h"
+@@ -56,7 +57,7 @@ private:
+     template <class Archive>
+     void serialize(Archive& ar, const unsigned int) {
+         ar& boost::serialization::base_object<ArchiveFactory>(*this);
+-        ar & base_path;
++        ar& FileUtil::Path::make(base_path);
+     }
+     friend class boost::serialization::access;
+ };
+diff --git a/src/core/file_sys/savedata_archive.h b/src/core/file_sys/savedata_archive.h
+--- a/src/core/file_sys/savedata_archive.h
++++ b/src/core/file_sys/savedata_archive.h
+@@ -5,6 +5,7 @@
+ #pragma once
+ 
+ #include <string>
++#include "common/file_util.h"
+ #include "core/file_sys/archive_backend.h"
+ #include "core/file_sys/directory_backend.h"
+ #include "core/file_sys/file_backend.h"
+@@ -43,7 +44,7 @@ private:
+     template <class Archive>
+     void serialize(Archive& ar, const unsigned int) {
+         ar& boost::serialization::base_object<ArchiveBackend>(*this);
+-        ar & mount_point;
++        ar& FileUtil::Path::make(mount_point);
+         ar & allow_zero_size_create;
+     }
+     friend class boost::serialization::access;
