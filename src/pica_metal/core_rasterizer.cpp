@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -42,11 +43,12 @@ bool fits_physical_address(PAddr address, uint64_t size) {
                             std::numeric_limits<PAddr>::max();
 }
 
-bool uniform_pixels(std::span<const uint8_t> bytes, uint32_t bytes_per_pixel) {
-    if (bytes.empty() || bytes.size() % bytes_per_pixel) return false;
-    for (size_t offset = bytes_per_pixel; offset < bytes.size(); offset += bytes_per_pixel)
-        if (std::memcmp(bytes.data(), bytes.data() + offset, bytes_per_pixel) != 0) return false;
-    return true;
+bool rasterizer_cacheable(PAddr address, uint64_t size) {
+    const uint64_t end = static_cast<uint64_t>(address) + size;
+    const bool in_vram = address >= Memory::VRAM_PADDR && end <= Memory::VRAM_PADDR_END;
+    const bool in_fcram =
+        address >= Memory::FCRAM_PADDR && end <= Memory::FCRAM_N3DS_PADDR_END;
+    return in_vram || in_fcram;
 }
 
 } // namespace
@@ -149,6 +151,55 @@ struct CoreRasterizer::Impl {
         return true;
     }
 
+    bool flush_depth_stencil() {
+        if (!dirty_depth_stencil) return true;
+        if (!target || !key) return false;
+        const DepthStencilResult result = renderer.readback_depth_stencil(*target);
+        if (!result) {
+            fail("Metal depth/stencil readback failed: " + result.message);
+            return false;
+        }
+        const uint32_t size = depth_size(*key);
+        auto memory_ref = memory.GetPhysicalRef(key->depth_address);
+        if (!memory_ref || memory_ref.GetSize() < size) {
+            fail("PICA Metal depth target left valid guest memory before flush");
+            return false;
+        }
+        auto destination = memory_ref.GetWriteBytes(size);
+        const uint32_t bytes_per_pixel =
+            Pica::FramebufferRegs::BytesPerDepthPixel(key->depth_format);
+        const uint32_t depth_bits =
+            Pica::FramebufferRegs::DepthBitsPerPixel(key->depth_format);
+        const uint32_t max_depth = (1U << depth_bits) - 1U;
+        for (uint32_t y = 0; y < key->height; ++y) {
+            const uint32_t tiled_y = key->height - 1 - y;
+            for (uint32_t x = 0; x < key->width; ++x) {
+                const size_t source = static_cast<size_t>(y) * key->width + x;
+                const size_t destination_offset =
+                    VideoCore::GetMortonOffset(x, tiled_y, bytes_per_pixel) +
+                    static_cast<size_t>(tiled_y & ~7U) * key->width * bytes_per_pixel;
+                const double normalized = std::clamp(static_cast<double>(result.image.depth[source]),
+                                                     0.0, 1.0);
+                const uint32_t depth =
+                    static_cast<uint32_t>(std::llround(normalized * max_depth));
+                auto* output = destination.data() + destination_offset;
+                switch (key->depth_format) {
+                case Pica::FramebufferRegs::DepthFormat::D16:
+                    Common::Color::EncodeD16(depth, output);
+                    break;
+                case Pica::FramebufferRegs::DepthFormat::D24:
+                    Common::Color::EncodeD24(depth, output);
+                    break;
+                case Pica::FramebufferRegs::DepthFormat::D24S8:
+                    Common::Color::EncodeD24S8(depth, result.image.stencil[source], output);
+                    break;
+                }
+            }
+        }
+        dirty_depth_stencil = false;
+        return true;
+    }
+
     std::vector<uint8_t> decode_color(std::span<const uint8_t> source, uint32_t width,
                                       uint32_t height) {
         std::vector<uint8_t> result(static_cast<size_t>(width) * height * 4);
@@ -163,6 +214,45 @@ struct CoreRasterizer::Impl {
             }
         }
         return result;
+    }
+
+    void decode_depth_stencil(std::span<const uint8_t> source, const TargetKey& value,
+                              std::vector<float>& depth, std::vector<uint8_t>& stencil) {
+        const size_t pixel_count = static_cast<size_t>(value.width) * value.height;
+        depth.resize(pixel_count);
+        if (value.depth_format == Pica::FramebufferRegs::DepthFormat::D24S8)
+            stencil.resize(pixel_count);
+        const uint32_t bytes_per_pixel =
+            Pica::FramebufferRegs::BytesPerDepthPixel(value.depth_format);
+        const uint32_t depth_bits =
+            Pica::FramebufferRegs::DepthBitsPerPixel(value.depth_format);
+        const float max_depth = static_cast<float>((1U << depth_bits) - 1U);
+        for (uint32_t y = 0; y < value.height; ++y) {
+            const uint32_t tiled_y = value.height - 1 - y;
+            for (uint32_t x = 0; x < value.width; ++x) {
+                const size_t source_offset =
+                    VideoCore::GetMortonOffset(x, tiled_y, bytes_per_pixel) +
+                    static_cast<size_t>(tiled_y & ~7U) * value.width * bytes_per_pixel;
+                const size_t destination = static_cast<size_t>(y) * value.width + x;
+                const auto* input = source.data() + source_offset;
+                uint32_t depth_value{};
+                switch (value.depth_format) {
+                case Pica::FramebufferRegs::DepthFormat::D16:
+                    depth_value = Common::Color::DecodeD16(input);
+                    break;
+                case Pica::FramebufferRegs::DepthFormat::D24:
+                    depth_value = Common::Color::DecodeD24(input);
+                    break;
+                case Pica::FramebufferRegs::DepthFormat::D24S8: {
+                    const auto decoded = Common::Color::DecodeD24S8(input);
+                    depth_value = decoded.x;
+                    stencil[destination] = static_cast<uint8_t>(decoded.y);
+                    break;
+                }
+                }
+                depth[destination] = static_cast<float>(depth_value) / max_depth;
+            }
+        }
     }
 
     bool ensure_target(const Pica::RegsInternal& regs) {
@@ -188,17 +278,16 @@ struct CoreRasterizer::Impl {
             color_bytes > MaxSurfaceBytes || depth_bytes > MaxSurfaceBytes ||
             !fits_physical_address(requested.color_address, color_bytes) ||
             !fits_physical_address(requested.depth_address, depth_bytes) ||
+            !rasterizer_cacheable(requested.color_address, color_bytes) ||
+            !rasterizer_cacheable(requested.depth_address, depth_bytes) ||
             overlaps(requested.color_address, color_bytes, requested.depth_address, depth_bytes)) {
-            fail("core adapter rejected invalid or aliased PICA target intervals");
+            fail("core adapter rejected invalid, uncacheable, or aliased PICA target intervals");
             return false;
         }
         if (key && *key == requested) return true;
         if (key) {
-            if (dirty_depth_stencil) {
-                fail("core adapter cannot replace a target with dirty depth/stencil");
-                return false;
-            }
             if (!flush_color()) return false;
+            if (!flush_depth_stencil()) return false;
             mark_target(false);
             target.reset();
             key.reset();
@@ -212,49 +301,25 @@ struct CoreRasterizer::Impl {
         }
         const auto color = color_ref.GetReadBytes<uint8_t>(color_bytes);
         const auto depth = depth_ref.GetReadBytes<uint8_t>(depth_bytes);
-        const bool needs_depth = regs.framebuffer.output_merger.depth_test_enable ||
-                                 regs.framebuffer.output_merger.depth_write_enable ||
-                                 regs.framebuffer.output_merger.stencil_test.enable;
-        if (!uniform_pixels(depth,
-                            Pica::FramebufferRegs::BytesPerDepthPixel(requested.depth_format))) {
-            fail("core adapter requires a fully cleared depth/stencil target on first use");
-            return false;
-        }
         const uint32_t depth_bits = Pica::FramebufferRegs::DepthBitsPerPixel(requested.depth_format);
-        uint32_t depth_value = (1U << depth_bits) - 1U;
-        uint8_t stencil_value{};
-        switch (requested.depth_format) {
-            case Pica::FramebufferRegs::DepthFormat::D16:
-                depth_value = Common::Color::DecodeD16(depth.data());
-                break;
-            case Pica::FramebufferRegs::DepthFormat::D24:
-                depth_value = Common::Color::DecodeD24(depth.data());
-                break;
-            case Pica::FramebufferRegs::DepthFormat::D24S8: {
-                const auto decoded = Common::Color::DecodeD24S8(depth.data());
-                depth_value = decoded.x;
-                stencil_value = decoded.y;
-                break;
-            }
-        }
-        TargetDescriptor descriptor{requested.width, requested.height, depth_bits,
-                                    requested.depth_format ==
-                                        Pica::FramebufferRegs::DepthFormat::D24S8,
-                                    {}, static_cast<float>(depth_value) / ((1U << depth_bits) - 1U),
-                                    stencil_value};
-        std::vector<uint8_t> imported_color{};
-        if (uniform_pixels(color, 4)) {
-            const auto decoded = Common::Color::DecodeRGBA8(color.data());
-            descriptor.clear_color = {decoded.x / 255.0f, decoded.y / 255.0f,
-                                      decoded.z / 255.0f, decoded.w / 255.0f};
-        } else if (!needs_depth) {
-            imported_color = decode_color(color, requested.width, requested.height);
-            descriptor.initial_color_rgba8 = imported_color;
-            descriptor.initial_color_row_bytes = requested.width * 4;
-        } else {
-            fail("core adapter requires a fully cleared color target when depth/stencil is live");
-            return false;
-        }
+        std::vector<uint8_t> imported_color =
+            decode_color(color, requested.width, requested.height);
+        std::vector<float> imported_depth{};
+        std::vector<uint8_t> imported_stencil{};
+        decode_depth_stencil(depth, requested, imported_depth, imported_stencil);
+        TargetDescriptor descriptor{
+            requested.width,
+            requested.height,
+            depth_bits,
+            requested.depth_format == Pica::FramebufferRegs::DepthFormat::D24S8,
+            {},
+            1.0f,
+            0,
+            imported_color,
+            requested.width * 4,
+            imported_depth,
+            imported_stencil,
+        };
         TargetResult created = renderer.create_target(descriptor);
         if (!created) {
             fail("core adapter target creation failed: " + created.message);
@@ -312,6 +377,12 @@ void CoreRasterizer::DrawTriangles() {
             impl_->vertices.clear();
             return;
         }
+        if (impl_->key && overlaps(address, size, impl_->key->depth_address,
+                                   impl_->depth_size(*impl_->key)) &&
+            !impl_->flush_depth_stencil()) {
+            impl_->vertices.clear();
+            return;
+        }
         auto texture_ref = impl_->memory.GetPhysicalRef(address);
         if (!texture_ref || texture_ref.GetSize() < size) {
             impl_->fail("core adapter texture0 interval is outside guest physical memory");
@@ -341,11 +412,6 @@ void CoreRasterizer::DrawTriangles() {
         impl_->fail("core adapter rejected live PICA state: " + decoded.message);
         return;
     }
-    if (converted.state.depth_write_enable ||
-        (converted.state.stencil_test_enable && converted.state.stencil_write_mask != 0)) {
-        impl_->fail("core adapter rejects depth/stencil writes until guest export is implemented");
-        return;
-    }
     const Draw draw = converted.view();
     ++impl_->submissions;
     const ValidationResult rendered = impl_->renderer.draw(*impl_->target, std::span{&draw, 1});
@@ -355,21 +421,22 @@ void CoreRasterizer::DrawTriangles() {
     }
     ++impl_->metal_draws;
     impl_->dirty_color = true;
+    impl_->dirty_depth_stencil =
+        impl_->dirty_depth_stencil || converted.state.depth_write_enable ||
+        (converted.state.stencil_test_enable && converted.state.stencil_write_mask != 0);
 }
 
 void CoreRasterizer::FlushAll() {
     if (!impl_->flush_color()) return;
-    if (impl_->dirty_depth_stencil)
-        impl_->fail("core adapter cannot export dirty depth/stencil to guest RAM yet");
+    impl_->flush_depth_stencil();
 }
 
 void CoreRasterizer::FlushRegion(PAddr addr, u32 size) {
     if (!impl_->key || !size) return;
     if (overlaps(addr, size, impl_->key->color_address, impl_->color_size(*impl_->key)))
         impl_->flush_color();
-    if (overlaps(addr, size, impl_->key->depth_address, impl_->depth_size(*impl_->key)) &&
-        impl_->dirty_depth_stencil)
-        impl_->fail("core adapter cannot flush dirty depth/stencil region yet");
+    if (overlaps(addr, size, impl_->key->depth_address, impl_->depth_size(*impl_->key)))
+        impl_->flush_depth_stencil();
 }
 
 void CoreRasterizer::InvalidateRegion(PAddr addr, u32 size) {
@@ -379,11 +446,8 @@ void CoreRasterizer::InvalidateRegion(PAddr addr, u32 size) {
     const bool depth_overlap =
         overlaps(addr, size, impl_->key->depth_address, impl_->depth_size(*impl_->key));
     if (!color_overlap && !depth_overlap) return;
-    if (impl_->dirty_depth_stencil) {
-        impl_->fail("core adapter cannot invalidate a target with dirty depth/stencil");
-        return;
-    }
     if (!impl_->flush_color()) return;
+    if (!impl_->flush_depth_stencil()) return;
     impl_->mark_target(false);
     impl_->target.reset();
     impl_->key.reset();
@@ -398,7 +462,7 @@ void CoreRasterizer::ClearAll(bool flush) {
     impl_->vertices.clear();
     if (flush) {
         FlushAll();
-        if (!impl_->fatal.empty() || impl_->dirty_depth_stencil) return;
+        if (!impl_->fatal.empty()) return;
     }
     impl_->mark_target(false);
     impl_->target.reset();

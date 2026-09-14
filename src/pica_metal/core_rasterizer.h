@@ -34,7 +34,7 @@ public:
     void ClearAll(bool flush) override;
 
     // Used by RendererSoftware immediately before its existing RAM presenter.
-    // This deliberately does not request unsupported depth/stencil export.
+    // Presentation reads color only; dirty depth/stencil remains owned by the target.
     bool FlushColorForPresentation();
     bool healthy() const;
     const std::string& error() const;

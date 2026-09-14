@@ -427,6 +427,22 @@ TargetResult Renderer::create_target(const TargetDescriptor& descriptor) {
              descriptor.initial_color_rgba8.size() <
                  static_cast<uint64_t>(descriptor.initial_color_row_bytes) * descriptor.height))
             return {Error::InvalidDraw, "persistent target RGBA8 import is truncated", {}};
+        const uint64_t pixel_count = static_cast<uint64_t>(descriptor.width) * descriptor.height;
+        const bool imports_depth = !descriptor.initial_depth.empty();
+        if ((imports_depth && descriptor.initial_depth.size() < pixel_count) ||
+            (!descriptor.initial_stencil.empty() && !descriptor.has_stencil) ||
+            (!descriptor.initial_stencil.empty() && !imports_depth) ||
+            (descriptor.has_stencil && imports_depth &&
+             descriptor.initial_stencil.size() < pixel_count))
+            return {Error::InvalidDraw, "persistent target depth/stencil import is incomplete", {}};
+        if (imports_depth) {
+            for (uint64_t index = 0; index < pixel_count; ++index) {
+                const float value = descriptor.initial_depth[index];
+                if (!std::isfinite(value) || value < 0.0f || value > 1.0f)
+                    return {Error::InvalidDraw,
+                            "persistent target depth import contains an invalid value", {}};
+            }
+        }
 
         auto target = std::make_unique<Target::Impl>();
         target->device = impl_->device;
@@ -458,6 +474,62 @@ TargetResult Renderer::create_target(const TargetDescriptor& descriptor) {
                               bytesPerRow:descriptor.initial_color_row_bytes];
         }
 
+        const uint32_t depth_row_bytes = (descriptor.width * 4U + 255U) & ~255U;
+        const uint32_t stencil_row_bytes = (descriptor.width + 255U) & ~255U;
+        id<MTLBuffer> depth_import{};
+        id<MTLBuffer> stencil_import{};
+        if (imports_depth) {
+            depth_import = [impl_->device
+                newBufferWithLength:static_cast<NSUInteger>(depth_row_bytes) * descriptor.height
+                            options:MTLResourceStorageModeShared];
+            if (!depth_import || !depth_import.contents)
+                return {Error::MetalUnavailable, "persistent depth import allocation failed", {}};
+            auto* destination = static_cast<uint8_t*>(depth_import.contents);
+            for (uint32_t y = 0; y < descriptor.height; ++y)
+                std::memcpy(destination + static_cast<size_t>(y) * depth_row_bytes,
+                            descriptor.initial_depth.data() + static_cast<size_t>(y) * descriptor.width,
+                            static_cast<size_t>(descriptor.width) * sizeof(float));
+            if (descriptor.has_stencil) {
+                stencil_import = [impl_->device
+                    newBufferWithLength:static_cast<NSUInteger>(stencil_row_bytes) * descriptor.height
+                                options:MTLResourceStorageModeShared];
+                if (!stencil_import || !stencil_import.contents)
+                    return {Error::MetalUnavailable, "persistent stencil import allocation failed", {}};
+                destination = static_cast<uint8_t*>(stencil_import.contents);
+                for (uint32_t y = 0; y < descriptor.height; ++y)
+                    std::memcpy(destination + static_cast<size_t>(y) * stencil_row_bytes,
+                                descriptor.initial_stencil.data() + static_cast<size_t>(y) * descriptor.width,
+                                descriptor.width);
+            }
+        }
+
+        id<MTLCommandBuffer> command = [impl_->queue commandBuffer];
+        if (!command)
+            return {Error::MetalUnavailable, "persistent target command allocation failed", {}};
+        if (imports_depth) {
+            id<MTLBlitCommandEncoder> blit = [command blitCommandEncoder];
+            if (!blit)
+                return {Error::MetalUnavailable, "persistent depth import encoder failed", {}};
+            const MTLSize size = MTLSizeMake(descriptor.width, descriptor.height, 1);
+            const MTLBlitOption depth_option = descriptor.has_stencil
+                                                   ? MTLBlitOptionDepthFromDepthStencil
+                                                   : MTLBlitOptionNone;
+            [blit copyFromBuffer:depth_import sourceOffset:0 sourceBytesPerRow:depth_row_bytes
+                 sourceBytesPerImage:0
+                          sourceSize:size toTexture:target->depth destinationSlice:0
+                    destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)
+                            options:depth_option];
+            if (descriptor.has_stencil) {
+                [blit copyFromBuffer:stencil_import sourceOffset:0
+                     sourceBytesPerRow:stencil_row_bytes
+                   sourceBytesPerImage:0
+                              sourceSize:size toTexture:target->depth destinationSlice:0
+                        destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)
+                                options:MTLBlitOptionStencilFromDepthStencil];
+            }
+            [blit endEncoding];
+        }
+
         MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
         pass.colorAttachments[0].texture = target->color;
         pass.colorAttachments[0].loadAction = descriptor.initial_color_rgba8.empty()
@@ -468,28 +540,26 @@ TargetResult Renderer::create_target(const TargetDescriptor& descriptor) {
             descriptor.clear_color.x, descriptor.clear_color.y, descriptor.clear_color.z,
             descriptor.clear_color.w);
         pass.depthAttachment.texture = target->depth;
-        pass.depthAttachment.loadAction = MTLLoadActionClear;
+        pass.depthAttachment.loadAction = imports_depth ? MTLLoadActionLoad : MTLLoadActionClear;
         pass.depthAttachment.storeAction = MTLStoreActionStore;
         const uint32_t levels = (1U << descriptor.pica_depth_bits) - 1U;
         pass.depthAttachment.clearDepth = std::floor(descriptor.clear_depth * levels) / levels;
         if (descriptor.has_stencil) {
             pass.stencilAttachment.texture = target->depth;
-            pass.stencilAttachment.loadAction = MTLLoadActionClear;
+            pass.stencilAttachment.loadAction = imports_depth ? MTLLoadActionLoad : MTLLoadActionClear;
             pass.stencilAttachment.storeAction = MTLStoreActionStore;
             pass.stencilAttachment.clearStencil = descriptor.clear_stencil;
         }
-        id<MTLCommandBuffer> command = [impl_->queue commandBuffer];
-        id<MTLRenderCommandEncoder> encoder =
-            command ? [command renderCommandEncoderWithDescriptor:pass] : nil;
-        if (!command || !encoder)
-            return {Error::MetalUnavailable, "persistent target clear encoder failed", {}};
+        id<MTLRenderCommandEncoder> encoder = [command renderCommandEncoderWithDescriptor:pass];
+        if (!encoder)
+            return {Error::MetalUnavailable, "persistent target initialization encoder failed", {}};
         [encoder endEncoding];
         [command commit];
         [command waitUntilCompleted];
         if (command.status != MTLCommandBufferStatusCompleted)
             return {Error::Submission,
                     command.error ? command.error.localizedDescription.UTF8String
-                                  : "persistent target clear failed",
+                                  : "persistent target initialization failed",
                     {}};
         return {Error::None, {}, std::unique_ptr<Target>(new Target(std::move(target)))};
     }
@@ -674,6 +744,85 @@ RenderResult Renderer::readback(Target& target) {
         for (uint32_t y = 0; y < image.height; ++y)
             std::memcpy(image.rgba8.data() + y * image.row_bytes, bytes + y * aligned_row,
                         image.row_bytes);
+        return {Error::None, {}, std::move(image)};
+    }
+}
+
+DepthStencilResult Renderer::readback_depth_stencil(Target& target) {
+    @autoreleasepool {
+        if (!impl_ || !impl_->setup_error.empty() || !target.impl_ ||
+            target.impl_->device != impl_->device || target.impl_->poisoned)
+            return {Error::InvalidDraw, "persistent Metal target is moved from", {}};
+        const uint32_t depth_row_bytes = (target.impl_->width * 4U + 255U) & ~255U;
+        const uint32_t stencil_row_bytes = (target.impl_->width + 255U) & ~255U;
+        id<MTLBuffer> depth_buffer = [impl_->device
+            newBufferWithLength:static_cast<NSUInteger>(depth_row_bytes) * target.impl_->height
+                        options:MTLResourceStorageModeShared];
+        id<MTLBuffer> stencil_buffer{};
+        if (target.impl_->has_stencil) {
+            stencil_buffer = [impl_->device
+                newBufferWithLength:static_cast<NSUInteger>(stencil_row_bytes) * target.impl_->height
+                            options:MTLResourceStorageModeShared];
+        }
+        if (!depth_buffer || !depth_buffer.contents ||
+            (target.impl_->has_stencil && (!stencil_buffer || !stencil_buffer.contents)))
+            return {Error::MetalUnavailable,
+                    "persistent Metal depth/stencil readback allocation failed", {}};
+        id<MTLCommandBuffer> command = [impl_->queue commandBuffer];
+        if (!command)
+            return {Error::MetalUnavailable,
+                    "persistent Metal depth/stencil readback command failed", {}};
+        id<MTLBlitCommandEncoder> blit = [command blitCommandEncoder];
+        if (!blit)
+            return {Error::MetalUnavailable,
+                    "persistent Metal depth/stencil readback encoder failed", {}};
+        const MTLSize size = MTLSizeMake(target.impl_->width, target.impl_->height, 1);
+        const MTLBlitOption depth_option = target.impl_->has_stencil
+                                               ? MTLBlitOptionDepthFromDepthStencil
+                                               : MTLBlitOptionNone;
+        [blit copyFromTexture:target.impl_->depth sourceSlice:0 sourceLevel:0
+                      sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:size
+                         toBuffer:depth_buffer destinationOffset:0
+           destinationBytesPerRow:depth_row_bytes
+         destinationBytesPerImage:0
+                           options:depth_option];
+        if (target.impl_->has_stencil) {
+            [blit copyFromTexture:target.impl_->depth sourceSlice:0 sourceLevel:0
+                          sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:size
+                             toBuffer:stencil_buffer destinationOffset:0
+               destinationBytesPerRow:stencil_row_bytes
+             destinationBytesPerImage:0
+                               options:MTLBlitOptionStencilFromDepthStencil];
+        }
+        [blit endEncoding];
+        [command commit];
+        [command waitUntilCompleted];
+        if (command.status != MTLCommandBufferStatusCompleted) {
+            target.impl_->poisoned = true;
+            return {Error::Submission,
+                    command.error ? command.error.localizedDescription.UTF8String
+                                  : "persistent Metal depth/stencil readback failed",
+                    {}};
+        }
+        DepthStencilImage image{};
+        image.width = target.impl_->width;
+        image.height = target.impl_->height;
+        const size_t pixel_count = static_cast<size_t>(image.width) * image.height;
+        image.depth.resize(pixel_count);
+        if (target.impl_->has_stencil) image.stencil.resize(pixel_count);
+        const auto* depth_bytes = static_cast<const uint8_t*>(depth_buffer.contents);
+        const auto* stencil_bytes = target.impl_->has_stencil
+                                        ? static_cast<const uint8_t*>(stencil_buffer.contents)
+                                        : nullptr;
+        for (uint32_t y = 0; y < image.height; ++y) {
+            std::memcpy(image.depth.data() + static_cast<size_t>(y) * image.width,
+                        depth_bytes + static_cast<size_t>(y) * depth_row_bytes,
+                        static_cast<size_t>(image.width) * sizeof(float));
+            if (stencil_bytes)
+                std::memcpy(image.stencil.data() + static_cast<size_t>(y) * image.width,
+                            stencil_bytes + static_cast<size_t>(y) * stencil_row_bytes,
+                            image.width);
+        }
         return {Error::None, {}, std::move(image)};
     }
 }

@@ -242,6 +242,26 @@ struct TargetDescriptor {
     uint8_t clear_stencil{};
     std::span<const uint8_t> initial_color_rgba8{};
     uint32_t initial_color_row_bytes{};
+    // Row-major, top-left-origin CPU snapshots. Depth values are decoded PICA
+    // codes n / ((1 << pica_depth_bits) - 1). When initial_depth is present,
+    // create_target imports it instead of clearing depth. Stencil is required
+    // alongside depth for a depth/stencil target.
+    std::span<const float> initial_depth{};
+    std::span<const uint8_t> initial_stencil{};
+};
+
+struct DepthStencilImage {
+    uint32_t width{};
+    uint32_t height{};
+    std::vector<float> depth{};
+    std::vector<uint8_t> stencil{};
+};
+
+struct DepthStencilResult {
+    Error error{Error::None};
+    std::string message{};
+    DepthStencilImage image{};
+    explicit operator bool() const { return error == Error::None; }
 };
 
 class Target {
@@ -282,6 +302,7 @@ public:
     TargetResult create_target(const TargetDescriptor& descriptor);
     ValidationResult draw(Target& target, std::span<const Draw> draws);
     RenderResult readback(Target& target);
+    DepthStencilResult readback_depth_stencil(Target& target);
     RenderResult render(const Frame& frame);
 
 private:

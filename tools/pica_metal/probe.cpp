@@ -1,6 +1,7 @@
 #include "pica_metal.h"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -57,6 +58,13 @@ void expect(const Image& image, uint32_t x, uint32_t y, std::array<uint8_t, 4> v
             fail(message);
         }
     }
+}
+
+uint32_t depth_code(const DepthStencilImage& image, uint32_t x, uint32_t y, uint32_t bits) {
+    const uint32_t maximum = (1U << bits) - 1U;
+    return static_cast<uint32_t>(
+        std::llround(static_cast<double>(image.depth[static_cast<size_t>(y) * image.width + x]) *
+                     maximum));
 }
 
 } // namespace
@@ -150,10 +158,64 @@ int main() {
     expect(second_readback.image, 32, 32, {255, 0, 0, 255},
            "LoadActionLoad failed to retain persistent color/depth across submissions");
 
+    std::vector<float> initial_d16(8 * 8, 0.0f);
+    constexpr uint32_t d16_max = (1U << 16) - 1U;
+    for (size_t i = 0; i < initial_d16.size(); ++i)
+        initial_d16[i] = static_cast<float>((i * 997U + 1U) & d16_max) / d16_max;
+    TargetResult d16_imported = renderer.create_target(
+        TargetDescriptor{8, 8, 16, false, {}, 1.0f, 0, {}, 0, initial_d16, {}});
+    if (!d16_imported) fail(d16_imported.message.c_str());
+    const DepthStencilResult d16_snapshot =
+        renderer.readback_depth_stencil(*d16_imported.target);
+    if (!d16_snapshot) fail(d16_snapshot.message.c_str());
+    if (depth_code(d16_snapshot.image, 0, 0, 16) != 1 ||
+        depth_code(d16_snapshot.image, 7, 7, 16) != ((63U * 997U + 1U) & d16_max) ||
+        !d16_snapshot.image.stencil.empty())
+        fail("D16 per-pixel import/readback did not preserve adjacent quantized values");
+
+    constexpr uint32_t ds_size = 8;
+    constexpr uint32_t d24_max = (1U << 24) - 1U;
+    std::vector<float> initial_d24s8(ds_size * ds_size);
+    std::vector<uint8_t> initial_stencil(ds_size * ds_size);
+    for (size_t i = 0; i < initial_d24s8.size(); ++i) {
+        initial_d24s8[i] = static_cast<float>((i * 131071U + 1U) & d24_max) / d24_max;
+        initial_stencil[i] = (i % 2 == 0) ? 3 : 7;
+    }
+    const size_t center_index = 4 * ds_size + 4;
+    initial_d24s8[center_index] = 0.75f;
+    initial_stencil[center_index] = 3;
+    TargetResult d24s8_imported = renderer.create_target(TargetDescriptor{
+        ds_size, ds_size, 24, true, {}, 1.0f, 0, {}, 0, initial_d24s8, initial_stencil});
+    if (!d24s8_imported) fail(d24s8_imported.message.c_str());
+    const DepthStencilResult before_draw =
+        renderer.readback_depth_stencil(*d24s8_imported.target);
+    if (!before_draw) fail(before_draw.message.c_str());
+    if (depth_code(before_draw.image, 0, 0, 24) != 1 ||
+        before_draw.image.stencil[0] != 3 || before_draw.image.stencil[1] != 7)
+        fail("D24S8 per-pixel import did not preserve depth/stencil planes");
+
+    const auto ds_vertices = triangle(-0.25f);
+    auto ds_state = state(ds_size, ds_size, {1, 1, 1, 1}, 0.25f);
+    ds_state.stencil_test_enable = true;
+    ds_state.stencil_compare = CompareFunc::Equal;
+    ds_state.stencil_reference = 3;
+    ds_state.stencil_depth_pass = StencilAction::IncrementClamp;
+    const Draw ds_draw{ds_vertices, ds_state, nullptr};
+    if (const auto result = renderer.draw(*d24s8_imported.target, std::span{&ds_draw, 1}); !result)
+        fail(result.message.c_str());
+    const DepthStencilResult after_draw =
+        renderer.readback_depth_stencil(*d24s8_imported.target);
+    if (!after_draw) fail(after_draw.message.c_str());
+    if (depth_code(after_draw.image, 4, 4, 24) != d24_max / 4 ||
+        after_draw.image.stencil[center_index] != 4 ||
+        depth_code(after_draw.image, 0, 0, 24) != 1 || after_draw.image.stencil[0] != 3)
+        fail("D24S8 imported compare/write/readback did not preserve per-pixel state");
+
     std::puts("{\"mode\":\"pica-metal-golden\",\"passed\":true,"
               "\"scope\":\"post-PICA-vertex-output rasterization\","
               "\"draw_batches\":2,\"depth_retained\":true,"
               "\"texture0_rgba8\":true,\"tev_accelerated\":157,"
               "\"tev_software_reference\":156,\"persistent_target\":true,"
-              "\"rgba8_import\":true,\"game_integrated\":false}");
+              "\"rgba8_import\":true,\"depth_stencil_snapshot\":true,"
+              "\"game_integrated\":false}");
 }

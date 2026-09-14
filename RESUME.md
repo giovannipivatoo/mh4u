@@ -2,6 +2,14 @@
 
 ## Implementazione AOT + Metal in corso — 2026-09-15
 
+Ultimo avanzamento Metal: import/export depth-stencil implementato con blit Metal
+separati, D16/D24/D24S8 tiled guest e conversione quantizzata preservata. Target
+limitati a VRAM/FCRAM interamente cacheabili. Smoke reale fresco: 54/54 draw e
+submission Metal, 52 video frame neri, poi arresto su texture0 non-RGBA8. Exit0
+senza timeout, ma limite300 non raggiunto e nessuna schermata di gioco dimostrata.
+Provenance e log `.local/pica-metal-core-smoke/`, test GPU dedicati2/2 PASS.
+Prossimo slice Metal: formati texture reali (decode pinned, limiti espliciti).
+
 Branch locale/remoto `feat/apple-silicon-aot-metal`; lavoro utente autorizzato,
 implementazione delegata a Sol, revisione read-only Astra. Stato e comandi in
 `docs/aot-metal.md`. Le nuove opzioni CMake costruiscono moduli sperimentali:

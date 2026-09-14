@@ -96,37 +96,39 @@ is not an image-equivalence test. A later eight-batch window encounters ETC1A4 a
 procedural-texture states that remain unsupported. Persistent render targets and
 an original initial state are needed before comparing a complete draw sequence.
 
-The Metal API now exposes persistent targets: create with an explicit clear or
-RGBA8 import, submit draws preserving color/depth/stencil, then read back color.
-Tests cover separate submissions retaining depth. Import still initializes depth
-and stencil from explicit clears; importing/exporting arbitrary original guest
-depth/stencil state remains unfinished.
+The Metal API exposes persistent targets: create with an explicit clear or
+imported color/depth/stencil, submit draws preserving those attachments, then
+read them back. Separate Metal blits transfer depth and stencil. Per-pixel GPU
+tests cover D16/D24S8 snapshots, stencil comparison/increment and depth writes.
+The core preserves quantized guest depth using nearest-integer conversion on
+export rather than truncating a second time.
 
 The experimental core adapter now maps a guest color/depth pair to a persistent
-target, tracks cached guest pages and writes color back in PICA tiled format.
+target, tracks cached guest pages and writes attachments back in PICA tiled format.
 It reuses the software RAM presentation path, with CPU PICA vertex processing;
-there is no Vulkan rasterization fallback when Metal is selected. The first real
-draw currently requests depth/stencil writes, which are rejected because guest
-depth/stencil export is unfinished. The live run reaches that draw but submits
-zero Metal draws. It is not a Metal-rendered game-frame result.
+there is no Vulkan rasterization fallback when Metal is selected. A fresh-state
+live run now submits 54 real game draws to Metal and produces 52 black video
+frames before rejecting a non-RGBA8 texture. This proves live GPU submission,
+not a correct visible game screen or gameplay.
 
 A candidate crash was isolated to inconsistent `RendererSoftware` layout across
 translation units. A conditional member moved `ScreenInfo` in one compilation
 unit while the libretro window read the old offset. The layout is now invariant.
-The same candidate with Metal disabled completes 300 frames; Metal enabled stops
-explicitly at the unsupported depth/stencil write, without the previous crash.
+The corrected candidate with Metal disabled completes 300 frames. Metal enabled
+now stops explicitly on unsupported graphics state, without the previous crash.
 
 The next integration gates are:
 
-1. Extend the existing linked-block dispatcher beyond the first SVC frontier,
-   retaining entry identities, tick/dispatch limits and explicit missing blocks.
-2. Connect AOT to the retained kernel through a concrete CPU adapter and compare
-   bounded runs using isolated state. Unsupported code must stop an AOT-only run;
+1. Extend linked-block and instruction coverage using observed entry descriptors,
+   retaining identities, tick/dispatch limits and explicit missing blocks.
+2. Validate the AOT kernel adapter across longer bounded runs, context switches
+   and memory operations. Unsupported code must stop an AOT-only run;
    a hybrid fallback, if introduced, must be named and counted separately.
-3. Validate captured game draws and implement persistent guest-addressed surfaces,
-   memory coherence and display transfers before selecting Metal in the core.
-4. Extend instruction and graphics coverage until finite game runs, ordinary saves
-   and representative gameplay pass. Keep the working runtime as a reference and
+3. Add the graphics states encountered by the live core, including additional
+   texture formats, and compare complete frames against the reference.
+4. Combine AOT and Metal once each backend advances independently, then validate
+   finite game runs, ordinary saves and representative gameplay. Keep the working
+   runtime as a reference and
    do not assume RAM savestates are portable across backend changes.
 
 There is no measured performance improvement or complete AOT/Metal game support

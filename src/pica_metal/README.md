@@ -30,9 +30,12 @@ formats, shadow/gas modes, and custom clipping planes.
 
 `Frame` keeps color and depth across ordered `DrawTriangles` batches. The lower
 level `Target` API also keeps an owned Metal color/depth-stencil target across
-separate submissions: creation takes an explicit color clear or RGBA8 import plus
-an explicit depth/stencil clear, `draw` uses `LoadActionLoad`, and `readback` is
-explicit. Depth/stencil snapshot import is not implemented yet.
+separate submissions: creation takes an explicit color clear or RGBA8 import and
+an explicit depth/stencil clear or row-major CPU snapshot. `draw` uses
+`LoadActionLoad`; color and depth/stencil readback are explicit. Snapshot depth
+values represent PICA-quantized `n / ((1 << bits) - 1)` values. Metal plane
+transfers use separate `MTLBlitOptionDepthFromDepthStencil` and
+`MTLBlitOptionStencilFromDepthStencil` copies.
 Submission failure poisons the target; callers must discard it instead of using
 possibly partial color/depth contents.
 
@@ -41,19 +44,22 @@ the CPU PICA vertex stage's `AddTriangle` output, keys one persistent target by
 guest color/depth address, format and dimensions, and marks the union of its guest
 pages rasterizer-cached. Color readback is encoded into the tiled guest RGBA8
 surface before the existing software framebuffer presenter or CPU transfer reads
-it. CPU invalidation flushes dirty color before discarding the target, including
-when the write overlaps only its depth interval.
+it. D16, D24 and D24S8 guest surfaces are decoded into the initial Metal target;
+dirty Metal depth/stencil planes are quantized to the nearest PICA integer and
+encoded back into the tiled guest surface. CPU invalidation flushes all dirty
+planes before discarding the target, including when the write overlaps only one
+of its intervals.
 
-This core seam deliberately supports one non-aliased RGBA8 target and bounded
-tiled RGBA8 texture0. Its first depth/stencil contents must be a uniform guest
-snapshot. It rejects every depth or stencil write before Metal submission because
-depth/stencil export to guest RAM is not implemented; this prevents the CPU
-blitter or memory reads from observing stale values. Fatal state is sticky. The
-candidate integration logs `metal_draws`, Metal `submissions`, and its stop reason,
-then terminates the libretro run instead of falling back to software rasterization.
+This core seam deliberately supports one non-aliased RGBA8 target, the three PICA
+depth formats, and bounded tiled RGBA8 texture0. Fatal state is sticky. The
+candidate integration logs `metal_draws`, Metal `submissions`, and its stop
+reason, then terminates the libretro run instead of falling back to software
+rasterization.
 
-This is not a game-rendering result yet. A usable core renderer still needs
-depth/stencil snapshot import and export, more target formats and aliases, coherent
+The current real-game smoke reached 54 Metal draw submissions before rejecting a
+non-RGBA8 texture and stopped before presenting a frame. This proves the live
+CPU-vertex-to-Metal seam and depth/stencil target lifecycle, not gameplay. A
+usable core renderer still needs more target formats and aliases, coherent
 multi-target lifetime, the real transfer/fill paths, more texture formats and
 procedural texturing. Vertex shader execution remains in the PICA core until a
 separate PICA shader-ISA translation path is implemented.
