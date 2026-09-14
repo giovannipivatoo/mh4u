@@ -56,7 +56,8 @@ struct State {
 #undef VK_FUNCTION
 };
 State state;
-constexpr VkDeviceSize stagingBytes = 400 * 480 * 4;
+// Bounded 12.3 MB staging supports live 1x–4x changes without reallocating mid-frame.
+constexpr VkDeviceSize stagingBytes = VkDeviceSize(400) * 480 * 4 * maxResolutionScale * maxResolutionScale;
 
 void check(VkResult result, const char *operation) {
     if (result != VK_SUCCESS)
@@ -360,12 +361,13 @@ void initialize(const std::string &libraryPath) {
     state.interface.lock_queue = lockQueue;
     state.interface.unlock_queue = unlockQueue;
     state.interface.set_signal_semaphore = setSignal;
-    fprintf(stderr, "Vulkan PICA via MoltenVK: %s; synchronous 400x480 staging readback to Metal presenter.\n", state.gpuName.c_str());
+    fprintf(stderr, "Vulkan PICA via MoltenVK: %s; synchronous staging readback up to %ux%u to Metal presenter.\n",
+        state.gpuName.c_str(), 400 * maxResolutionScale, 480 * maxResolutionScale);
     state.coreContextStarted = true;
     state.hardware.context_reset();
 }
 
-void video(const void *data, unsigned width, unsigned height, retro_video_refresh_t consumeBGRA) {
+void video(const void *data, unsigned width, unsigned height, ConsumeBGRA consumeBGRA) {
     std::lock_guard<std::mutex> lock(state.frameMutex);
     if (!state.callbackError.empty()) throw std::runtime_error(state.callbackError);
     if (!state.context.device) throw std::runtime_error("Vulkan frame submitted before context initialization");
@@ -374,8 +376,8 @@ void video(const void *data, unsigned width, unsigned height, retro_video_refres
         if (!state.producerCommands.empty() || state.signalSemaphore != VK_NULL_HANDLE) submit(state.producerCommands, false);
         return;
     }
-    if (data != RETRO_HW_FRAME_BUFFER_VALID || !state.image || !width || !height || width > 400 || height > 480)
-        throw std::runtime_error("Invalid Vulkan frame; this host bounds native output to 400x480");
+    if (data != RETRO_HW_FRAME_BUFFER_VALID || !state.image || !validFrameDimensions(width, height))
+        throw std::runtime_error("Invalid Vulkan frame; expected the stacked 400x480 layout at an integer scale from 1x to 4x");
     const auto &image = *state.image;
     const auto &view = image.create_info;
     if (!view.image || view.viewType != VK_IMAGE_VIEW_TYPE_2D || view.subresourceRange.levelCount != 1 || view.subresourceRange.layerCount != 1 || view.subresourceRange.aspectMask != VK_IMAGE_ASPECT_COLOR_BIT ||
@@ -459,7 +461,7 @@ void video(const void *data, unsigned width, unsigned height, retro_video_refres
     }
     ++state.frames;
     state.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    consumeBGRA(state.bgra.data(), width, height, size_t(width) * 4);
+    consumeBGRA(state.bgra, width, height);
 }
 
 void destroyCoreContext() noexcept {

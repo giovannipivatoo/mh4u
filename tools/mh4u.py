@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Prepare, build, run and verify the local MH4U Apple Silicon runtime."""
 import argparse
+import contextlib
+import ctypes
 from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -20,6 +23,8 @@ GAME = ROOT / '.local/game'
 SUPPORT = Path.home() / 'Library/Application Support/MH4U Runtime'
 CODE_HASH = '63940d7ef1fecc119f9fb820f5f6a2cf2f2a5549e4a70f00319fbd6c9c1ad8dc'
 SANDBOX = ['sandbox-exec', '-p', '(version 1)(allow default)(deny network*)']
+SAVE_SUFFIX = Path('sdmc/Nintendo 3DS/00000000000000000000000000000000/00000000000000000000000000000000/title/00040000/00126100/data/00000001')
+SDMC_SAVE_SUFFIX = SAVE_SUFFIX.relative_to('sdmc')
 
 
 def run(*args, **kwargs):
@@ -71,6 +76,169 @@ def host_command(game, *extra):
             '--state-dir', str(SUPPORT / '.local/state'), *map(str, extra)]
 
 
+def _profile_manifest(root):
+    require(root.is_dir() and not root.is_symlink(), f'Invalid profile directory: {root}')
+    result = {}
+    for path in sorted(root.rglob('*')):
+        require(not path.is_symlink(), f'Profile migration rejects symbolic links: {path}')
+        require(path.is_dir() or path.is_file(), f'Profile migration rejects special files: {path}')
+        if path.is_file():
+            result[str(path.relative_to(root))] = file_hash(path)
+    return result
+
+
+def _reject_symlink_chain(path):
+    current = Path(path).absolute()
+    for item in (current, *current.parents):
+        if item.exists() or item.is_symlink():
+            require(not item.is_symlink(), f'Profile migration rejects symbolic links: {item}')
+
+
+def _sync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _sync_tree(root):
+    for path in root.rglob('*'):
+        if path.is_file():
+            with path.open('rb') as stream:
+                os.fsync(stream.fileno())
+    for path in sorted((path for path in root.rglob('*') if path.is_dir()),
+                       key=lambda item: len(item.parts), reverse=True):
+        _sync_directory(path)
+    _sync_directory(root)
+
+
+@contextlib.contextmanager
+def _state_locks(*states):
+    locks = []
+    try:
+        for state in sorted(map(Path, states), key=lambda path: str(path.resolve())):
+            lock_dir = state / 'save-import'
+            _reject_symlink_chain(state)
+            _reject_symlink_chain(lock_dir)
+            lock_dir.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(lock_dir / 'session.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            stream = os.fdopen(descriptor, 'a+b')
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                stream.close()
+                raise RuntimeError(f'Another MH4U Runtime session is using {state}')
+            locks.append(stream)
+        yield
+    finally:
+        for stream in reversed(locks):
+            stream.close()
+
+
+def _swap_directories(first, second):
+    renamex_np = ctypes.CDLL(None, use_errno=True).renamex_np
+    renamex_np.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+    renamex_np.restype = ctypes.c_int
+    if renamex_np(os.fsencode(first), os.fsencode(second), 2):  # RENAME_SWAP
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def migrate_install_profile(source_state=ROOT / '.local/state', target_state=SUPPORT / '.local/state'):
+    """Copy a valid workspace profile only when the installed profile has no hunter."""
+    source_state, target_state = Path(source_state), Path(target_state)
+    source = source_state / 'Azahar/sdmc'
+    if not source.exists() and not source.is_symlink():
+        return {'migrated': False, 'reason': 'workspace profile is absent'}
+    _reject_symlink_chain(source_state)
+    _reject_symlink_chain(target_state)
+    target_state.mkdir(parents=True, exist_ok=True)
+    with _state_locks(source_state, target_state):
+        source_pending, target_pending = (source_state / 'save-import/pending',
+                                          target_state / 'save-import/pending')
+        require(not source_pending.exists() and not source_pending.is_symlink(), 'Workspace has a pending save import')
+        require(not target_pending.exists() and not target_pending.is_symlink(), 'Installed profile has a pending save import')
+        target = target_state / 'Azahar/sdmc'
+        _reject_symlink_chain(source)
+        _reject_symlink_chain(target)
+        source_raw, target_raw = source / SDMC_SAVE_SUFFIX, target / SDMC_SAVE_SUFFIX
+        if target.exists() or target.is_symlink():
+            _profile_manifest(target)
+        if any((target_raw / name).is_file() for name in ('user1', 'user2', 'user3')):
+            return {'migrated': False, 'reason': 'installed profile already has a user save'}
+        before = _profile_manifest(source)
+        if not source_raw.is_dir():
+            return {'migrated': False, 'reason': 'workspace profile has no user save'}
+        present_users = [name for name in ('user1', 'user2', 'user3') if (source_raw / name).exists()]
+        if not present_users:
+            return {'migrated': False, 'reason': 'workspace profile has no user save'}
+        require((source_raw / 'system').is_file() and (source_raw / 'system').stat().st_size == 512,
+                'Workspace profile has no valid system save')
+        entries = {path.name: path for path in source_raw.iterdir()}
+        require(set(entries) <= {'system', 'user1', 'user2', 'user3'}, 'Workspace savedata has unknown files')
+        for name in present_users:
+            require(entries[name].is_file() and entries[name].stat().st_size == 81408,
+                    f'Workspace profile has invalid {name}')
+
+        migration = target_state / 'profile-migration'
+        _reject_symlink_chain(migration)
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
+        staging = migration / f'.staging-{stamp}'
+        backup = migration / 'backups' / stamp / 'sdmc'
+        _reject_symlink_chain(backup)
+        had_target = target.exists()
+        work = backup if had_target else staging / 'Azahar'
+        work.parent.mkdir(parents=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _reject_symlink_chain(target.parent)
+        keep_work = False
+        try:
+            shutil.copytree(source, work)
+            require(_profile_manifest(source) == before, 'Workspace profile changed during migration')
+            require(_profile_manifest(work) == before, 'Copied profile failed hash verification')
+            _sync_tree(work)
+            if had_target:
+                _swap_directories(target, work)
+                keep_work = True  # The old installed profile is already at its permanent backup path.
+                try:
+                    require(_profile_manifest(target) == before, 'Activated profile failed verification')
+                    require(_profile_manifest(source) == before, 'Workspace profile changed during activation')
+                    _sync_directory(target.parent)
+                except Exception:
+                    try:
+                        _swap_directories(target, work)
+                        keep_work = False
+                    except Exception:
+                        pass  # Failed rollback still leaves the old profile intact at `work`.
+                    raise
+                _sync_directory(backup.parent)
+            else:
+                work.rename(target)
+                try:
+                    require(_profile_manifest(source) == before, 'Workspace profile changed during activation')
+                except Exception:
+                    target.rename(work)
+                    raise
+                _sync_directory(target.parent)
+                backup = None
+            record = {'migrated': True, 'source': str(source.resolve()),
+                      'target': str(target.resolve()), 'backup': str(backup) if backup else '',
+                      'scope': 'sdmc savedata and extdata', 'files': before,
+                      'preserved': ['nand', 'sysdata', 'load', 'cheats', 'shaders', 'savestates']}
+            temporary = migration / '.migration.json.tmp'
+            temporary.write_text(json.dumps(record, indent=2) + '\n')
+            with temporary.open('rb') as stream:
+                os.fsync(stream.fileno())
+            os.replace(temporary, migration / 'migration.json')
+            _sync_directory(migration)
+            return record
+        finally:
+            if not keep_work:
+                shutil.rmtree(work, ignore_errors=True)
+            shutil.rmtree(staging, ignore_errors=True)
+
+
 def install():
     """Install only the validated runtime inputs outside macOS's protected Desktop.
 
@@ -78,6 +246,7 @@ def install():
     the whole Desktop. The original image and development artifacts stay put.
     """
     game = prepared_game()
+    migrate_install_profile()
     build(rebuild_core=False)
     support = SUPPORT
     support.mkdir(parents=True, exist_ok=True)

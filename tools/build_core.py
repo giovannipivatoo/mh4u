@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / '.local/azahar-src'
 BUILD = ROOT / '.local/core-build'
 COMMIT = '26e608f6fa292b27cda0ae8c84e148d17600a5e6'
+TAG = '2126.1'
 URL = 'https://github.com/azahar-emu/azahar.git'
 EXCLUDED = 'src/core/hw/default_keys.h'
 MODULES = [
@@ -32,6 +33,12 @@ def git(*args, cwd=SOURCE, **kwargs):
     return run('git', *args, cwd=cwd, **kwargs)
 
 
+def write_export_identity():
+    """Give CMake the pinned identity after the private checkout metadata is removed."""
+    (SOURCE / 'GIT-COMMIT').write_text(COMMIT + '\n')
+    (SOURCE / 'GIT-TAG').write_text(TAG + '\n')
+
+
 def prepare_source():
     """Sparse checkout excludes the blob before any source file is downloaded."""
     if (SOURCE / 'CMakeLists.txt').exists():
@@ -41,6 +48,7 @@ def prepare_source():
         if ((SOURCE / '.git/objects').exists() or not provenance_path.exists()
                 or json.loads(provenance_path.read_text()).get('commit') != COMMIT):
             raise RuntimeError('Source preparation is incomplete or unverified; refusing to build it')
+        write_export_identity()
         return
     SOURCE.mkdir(parents=True, exist_ok=True)
     git('init')
@@ -64,7 +72,7 @@ def prepare_source():
     git('submodule', 'update', '--init', '--depth=1', '--jobs=8', '--', *MODULES)
     git('submodule', 'update', '--init', '--depth=1', '--jobs=2', '--',
         'externals/mcl', 'externals/robin-map', cwd=SOURCE / 'externals/dynarmic')
-    provenance = {'url': URL, 'tag': '2126.1', 'commit': COMMIT,
+    provenance = {'url': URL, 'tag': TAG, 'commit': COMMIT,
                   'excluded': [EXCLUDED], 'excluded_blob_not_downloaded': True,
                   'submodules': []}
     pointers = [p for p in SOURCE.rglob('.git') if p.is_file()]
@@ -77,6 +85,7 @@ def prepare_source():
     for pointer in pointers:
         pointer.unlink()
     shutil.rmtree(SOURCE / '.git')
+    write_export_identity()
 
 
 def apply_source_patch(source, patch):

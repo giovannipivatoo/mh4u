@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 
 spec = importlib.util.spec_from_file_location('build_core', Path(__file__).resolve().parents[1] / 'tools/build_core.py')
@@ -10,6 +11,21 @@ spec.loader.exec_module(build_core)
 
 
 class PatchApplicationTests(unittest.TestCase):
+    def test_existing_export_gets_pinned_build_identity(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / 'source'
+            source.mkdir()
+            (source / 'CMakeLists.txt').write_text('project(test)\n')
+            (root / '.local').mkdir()
+            (root / '.local/core-provenance.json').write_text(
+                '{"commit": "' + build_core.COMMIT + '"}\n')
+            with mock.patch.object(build_core, 'ROOT', root), mock.patch.object(
+                    build_core, 'SOURCE', source):
+                build_core.prepare_source()
+            self.assertEqual((source / 'GIT-COMMIT').read_text(), build_core.COMMIT + '\n')
+            self.assertEqual((source / 'GIT-TAG').read_text(), build_core.TAG + '\n')
+
     def test_insertion_only_patch_is_not_duplicated(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

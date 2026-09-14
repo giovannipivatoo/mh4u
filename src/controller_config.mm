@@ -59,6 +59,11 @@ bool releaseGate = true;
 bool lastHostPressed = false;
 __weak GCController *lastController = nil;
 TouchCursor currentTouchCursor;
+struct TouchDeltaState {
+    bool tracking = false;
+    float x = 0.f;
+    float y = 0.f;
+} touchDelta;
 void (*toggleLowerCallback)() = nullptr;
 void (*fullscreenCallback)(bool) = nullptr;
 void (*settingsCallback)(bool) = nullptr;
@@ -129,14 +134,24 @@ bool hostEdge(bool enabled, bool anyPhysicalPressed, bool hostPressed, bool &gat
 
 bool gameplayPress(bool pressed, bool isHostControl) { return pressed && !isHostControl; }
 
-TouchCursor cursorSample(TouchCursor cursor, bool available, bool touching,
+TouchCursor cursorSample(TouchCursor cursor, TouchDeltaState &delta, bool available, bool touching,
                          float x, float y, bool clickAllowed, bool r3Pressed) {
     cursor.available = available;
     cursor.pressed = available && clickAllowed && r3Pressed;
-    if (available && touching) {
-        cursor.x = std::clamp((x + 1.f) * .5f, 0.f, 1.f);
-        cursor.y = std::clamp((1.f - y) * .5f, 0.f, 1.f);
+    if (!available || !touching) {
+        delta.tracking = false;
+        return cursor;
     }
+    if (!delta.tracking) {
+        delta = {true, x, y};
+        return cursor;
+    }
+    // A wider horizontal gain keeps motion natural from a wide pad onto the 4:3 lower LCD.
+    constexpr float xGain = .75f, yGain = .50f;
+    cursor.x = std::clamp(cursor.x + (x - delta.x) * xGain, 0.f, 1.f);
+    cursor.y = std::clamp(cursor.y - (y - delta.y) * yGain, 0.f, 1.f);
+    delta.x = x;
+    delta.y = y;
     return cursor;
 }
 
@@ -229,6 +244,7 @@ using namespace ControllerConfig;
     if (settingsCallback) settingsCallback(true);
     releaseGate = true;
     currentTouchCursor.pressed = false;
+    touchDelta.tracking = false;
     @try {
         NSAlert *alert = [NSAlert new];
         alert.messageText = @"Controller Mapping";
@@ -298,6 +314,7 @@ using namespace ControllerConfig;
         if (settingsCallback) settingsCallback(false);
         releaseGate = true;
         lastHostPressed = false;
+        touchDelta.tracking = false;
         [ownerWindow makeKeyAndOrderFront:nil];
     }
 }
@@ -358,11 +375,13 @@ void poll(uint16_t &buttons, int16_t axes[2][2], bool enabled) {
         lastController = controller;
         currentTouchCursor.available = false;
         currentTouchCursor.pressed = false;
+        touchDelta.tracking = false;
     }
     if (!enabled || settingsIsOpen || !pad) {
         hostEdge(false, false, false, releaseGate, lastHostPressed);
         currentTouchCursor.available = false;
         currentTouchCursor.pressed = false;
+        touchDelta.tracking = false;
         return;
     }
     TouchSample touch = readTouch(controller, pad);
@@ -376,7 +395,7 @@ void poll(uint16_t &buttons, int16_t axes[2][2], bool enabled) {
     bool toggle = hostEdge(true, anyPressed(pad), hostPressed, releaseGate, lastHostPressed);
     bool lowerVisible = lowerScreenVisible();
     bool cursorAvailable = touch.available && lowerVisible && !releaseGate;
-    currentTouchCursor = cursorSample(currentTouchCursor, cursorAvailable,
+    currentTouchCursor = cursorSample(currentTouchCursor, touchDelta, cursorAvailable,
                                       cursorAvailable && touch.touching, touch.x, touch.y,
                                       cursorAvailable,
                                       pad.rightThumbstickButton.pressed);
@@ -415,6 +434,7 @@ void setLowerScreenVisible(bool visible) {
     [NSUserDefaults.standardUserDefaults setBool:visible forKey:kLowerVisible];
     menuTarget.lowerItem.state = visible ? NSControlStateValueOn : NSControlStateValueOff;
     currentTouchCursor.pressed = false;
+    touchDelta.tracking = false;
     releaseGate = true;
     lastHostPressed = false;
 }
@@ -435,14 +455,45 @@ int selfTest() {
     if (!hostEdge(true, true, true, gate, last)) return 9;
     if (gameplayPress(true, true) || !gameplayPress(true, false)) return 10;
     TouchCursor cursor;
-    cursor = cursorSample(cursor, true, true, -2.f, 2.f, true, true);
-    if (!cursor.available || !cursor.pressed || cursor.x != 0.f || cursor.y != 0.f) return 11;
-    cursor = cursorSample(cursor, true, false, 0.f, 0.f, false, true);
-    if (cursor.pressed || cursor.x != 0.f || cursor.y != 0.f) return 12;
-    cursor = cursorSample(cursor, true, true, 1.f, -1.f, true, false);
-    if (cursor.pressed || cursor.x != 1.f || cursor.y != 1.f) return 13;
-    cursor = cursorSample(cursor, false, false, 0.f, 0.f, true, true);
-    if (cursor.available || cursor.pressed || cursor.x != 1.f || cursor.y != 1.f) return 14;
+    TouchDeltaState delta;
+    auto sample = [&](bool available, bool touching, float x, float y, bool r3 = false) {
+        cursor = cursorSample(cursor, delta, available, touching, x, y, available, r3);
+    };
+    auto swipe = [&](float x0, float y0, float x1, float y1) {
+        sample(true, true, x0, y0);
+        sample(true, true, x1, y1);
+        sample(true, false, 0.f, 0.f);
+    };
+    sample(true, true, -.9f, .8f, true);
+    if (!cursor.available || !cursor.pressed || cursor.x != .5f || cursor.y != .5f) return 11;
+    sample(true, true, -.4f, .8f, true);
+    if (!cursor.pressed || cursor.x <= .5f || cursor.y != .5f) return 12;
+    float heldX = cursor.x, heldY = cursor.y;
+    sample(true, false, 0.f, 0.f, true);
+    if (!cursor.pressed || cursor.x != heldX || cursor.y != heldY || delta.tracking) return 13;
+    sample(true, true, .9f, -.9f, true);
+    if (!cursor.pressed || cursor.x != heldX || cursor.y != heldY) return 14;
+    sample(true, false, 0.f, 0.f);
+    swipe(-.5f, 0.f, .5f, 0.f);
+    swipe(-.5f, 0.f, .5f, 0.f);
+    if (cursor.x != 1.f) return 15;
+    swipe(.5f, 0.f, -.5f, 0.f);
+    swipe(.5f, 0.f, -.5f, 0.f);
+    if (cursor.x != 0.f) return 16;
+    swipe(0.f, -.5f, 0.f, .5f);
+    swipe(0.f, -.5f, 0.f, .5f);
+    if (cursor.y != 0.f) return 17;
+    swipe(0.f, .5f, 0.f, -.5f);
+    swipe(0.f, .5f, 0.f, -.5f);
+    if (cursor.y != 1.f) return 18;
+    sample(true, true, 0.f, 0.f, true);
+    sample(true, true, .25f, .25f, true);
+    if (!cursor.pressed || cursor.x == 0.f || cursor.y == 1.f) return 19;
+    heldX = cursor.x; heldY = cursor.y;
+    sample(false, false, 0.f, 0.f, true);
+    if (cursor.available || cursor.pressed || cursor.x != heldX || cursor.y != heldY || delta.tracking) return 20;
+    sample(true, true, -1.f, 1.f);
+    if (cursor.x != heldX || cursor.y != heldY) return 21;
     return 0;
 }
 

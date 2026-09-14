@@ -1,0 +1,803 @@
+diff --git a/src/citra_libretro/citra_libretro.cpp b/src/citra_libretro/citra_libretro.cpp
+index 3b30398..e155731 100644
+--- a/src/citra_libretro/citra_libretro.cpp
++++ b/src/citra_libretro/citra_libretro.cpp
+@@ -49,6 +49,7 @@
+ #include "core/hle/kernel/process.h"
+ #include "core/loader/loader.h"
+ #include "core/memory.h"
++#include "video_core/temporal_depth.h"
+ 
+ #ifdef HAVE_LIBRETRO_VFS
+ #include <streams/file_stream_transforms.h>
+@@ -88,6 +89,12 @@ void retro_init() {
+ 
+     LibRetro::Input::Init();
+ 
++    mh4u_temporal_depth_sink sink{MH4U_TEMPORAL_DEPTH_ABI_VERSION,
++                                  sizeof(mh4u_temporal_depth_sink), nullptr, nullptr, nullptr};
++    if (!LibRetro::GetTemporalDepthSink(&sink)) {
++        sink = {};
++    }
++    VideoCore::SetTemporalDepthSink(sink);
+ }
+ 
+ void retro_deinit() {
+@@ -97,6 +104,8 @@ void retro_deinit() {
+     }
+ 
+     LibRetro::Input::Shutdown();
++    VideoCore::SetTemporalDepthSink({});
++
+     delete emu_instance;
+ 
+     Common::Log::Stop();
+diff --git a/src/citra_libretro/environment.cpp b/src/citra_libretro/environment.cpp
+index 23c053b..25a3858 100644
+--- a/src/citra_libretro/environment.cpp
++++ b/src/citra_libretro/environment.cpp
+@@ -42,6 +42,10 @@ bool GetSoftwareFramebuffer(retro_framebuffer* fb, int width, int height) {
+     return environ_cb(RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER, fb);
+ }
+ 
++bool GetTemporalDepthSink(mh4u_temporal_depth_sink* sink) {
++    return environ_cb(RETRO_ENVIRONMENT_GET_MH4U_TEMPORAL_DEPTH_SINK, sink);
++}
++
+ void UploadVideoFrame(const void* data, unsigned width, unsigned height, size_t pitch) {
+     return video_cb(data, width, height, pitch);
+ }
+diff --git a/src/citra_libretro/environment.h b/src/citra_libretro/environment.h
+index d321f95..efa6d15 100644
+--- a/src/citra_libretro/environment.h
++++ b/src/citra_libretro/environment.h
+@@ -11,6 +11,7 @@
+ #include "common/settings.h"
+ #include "core/core.h"
+ #include "libretro.h"
++#include "temporal_frame.h"
+ 
+ namespace LibRetro {
+ 
+@@ -72,6 +73,9 @@ bool SetMemoryMaps(const retro_memory_map* map);
+ /// Sets the framebuffer pixel format.
+ bool SetPixelFormat(const retro_pixel_format fmt);
+ 
++/// Gets the opt-in MH4U temporal depth consumer supplied by the frontend.
++bool GetTemporalDepthSink(mh4u_temporal_depth_sink* sink);
++
+ /// Sets the H/W rendering context.
+ bool SetHWRenderer(retro_hw_render_callback* cb);
+ 
+diff --git a/src/temporal_frame.h b/src/temporal_frame.h
+new file mode 100644
+index 0000000..90b739b
+--- /dev/null
++++ b/src/temporal_frame.h
+@@ -0,0 +1,58 @@
++#pragma once
++
++#include <stddef.h>
++#include <stdbool.h>
++#include <stdint.h>
++
++#define RETRO_ENVIRONMENT_GET_MH4U_TEMPORAL_DEPTH_SINK (0x20000u | 0x4d48u)
++#define MH4U_TEMPORAL_DEPTH_ABI_VERSION 2u
++
++enum mh4u_temporal_depth_flags {
++    MH4U_TEMPORAL_DEPTH_TOP_UPRIGHT = 1u << 0,
++    MH4U_TEMPORAL_DEPTH_COLOR_BGRA8 = 1u << 1,
++    MH4U_TEMPORAL_DEPTH_DEPTH_R32F = 1u << 2,
++    MH4U_TEMPORAL_DEPTH_VALIDATED_SCALE = 1u << 3,
++};
++
++enum mh4u_pica_depth_mode {
++    MH4U_PICA_W_BUFFERING = 0,
++    MH4U_PICA_Z_BUFFERING = 1,
++};
++
++struct mh4u_temporal_depth_frame {
++    uint32_t abi_version;
++    uint32_t struct_size;
++    uint64_t sequence;
++    uint64_t display_sequence;
++    uint32_t source_color_address;
++    uint32_t presented_color_address;
++    uint32_t width;
++    uint32_t height;
++    uint32_t scale;
++    uint32_t color_row_bytes;
++    uint32_t depth_row_bytes;
++    uint32_t flags;
++    uint32_t pica_depth_mode;
++    uint32_t pica_viewport_depth_range_raw;
++    uint32_t pica_viewport_depth_near_plane_raw;
++    float pica_viewport_depth_scale;
++    float pica_viewport_depth_offset;
++    const uint8_t* color_bgra8;
++    const float* depth_r32f;
++};
++
++typedef void (*mh4u_temporal_depth_callback)(
++    void* user, const struct mh4u_temporal_depth_frame* frame);
++typedef bool (*mh4u_temporal_depth_enabled)(void* user);
++
++struct mh4u_temporal_depth_sink {
++    uint32_t abi_version;
++    uint32_t struct_size;
++    mh4u_temporal_depth_enabled enabled;
++    mh4u_temporal_depth_callback callback;
++    void* user;
++};
++
++#ifdef __cplusplus
++static_assert(sizeof(float) == 4, "MH4U temporal ABI requires 32-bit float");
++#endif
+diff --git a/src/video_core/CMakeLists.txt b/src/video_core/CMakeLists.txt
+index 528072c..d8959be 100644
+--- a/src/video_core/CMakeLists.txt
++++ b/src/video_core/CMakeLists.txt
+@@ -91,6 +91,8 @@ add_library(video_core STATIC EXCLUDE_FROM_ALL
+     shader/shader_jit_a64_compiler.h
+     shader/shader_jit_x64_compiler.cpp
+     shader/shader_jit_x64_compiler.h
++    temporal_depth.cpp
++    temporal_depth.h
+     texture/etc1.cpp
+     texture/etc1.h
+     texture/texture_decode.cpp
+diff --git a/src/video_core/renderer_vulkan/vk_blit_helper.cpp b/src/video_core/renderer_vulkan/vk_blit_helper.cpp
+index 929a33d..08ad4d7 100644
+--- a/src/video_core/renderer_vulkan/vk_blit_helper.cpp
++++ b/src/video_core/renderer_vulkan/vk_blit_helper.cpp
+@@ -522,7 +522,8 @@ bool BlitHelper::DepthToBuffer(Surface& source, vk::Buffer buffer,
+ 
+     renderpass_cache.EndRendering();
+     scheduler.Record([this, descriptor_set, copy, src_image = source.Image(),
+-                      extent = source.RealExtent(false)](vk::CommandBuffer cmdbuf) {
++                      extent = source.RealExtent(copy.texture_rect.GetWidth() > source.GetWidth() ||
++                                                 copy.texture_rect.GetHeight() > source.GetHeight())](vk::CommandBuffer cmdbuf) {
+         const vk::ImageMemoryBarrier pre_barrier = {
+             .srcAccessMask = vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+             .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 5dc31c6..08a096d 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -3,6 +3,7 @@
+ // Refer to the license.txt file included.
+ 
+ #include "common/alignment.h"
++#include "common/color.h"
+ #include "common/literals.h"
+ #include "common/logging/log.h"
+ #include "common/math_util.h"
+@@ -12,11 +13,19 @@
+ #include "core/loader/loader.h"
+ #include "core/memory.h"
+ #include "video_core/pica/pica_core.h"
++#include "video_core/pica_types.h"
+ #include "video_core/renderer_vulkan/renderer_vulkan.h"
+ #include "video_core/renderer_vulkan/vk_instance.h"
+ #include "video_core/renderer_vulkan/vk_rasterizer.h"
+ #include "video_core/renderer_vulkan/vk_scheduler.h"
+ #include "video_core/texture/texture_decode.h"
++#include "video_core/temporal_depth.h"
++#include "video_core/utils.h"
++
++#include <cstdlib>
++#include <filesystem>
++#include <fstream>
++#include <unordered_map>
+ 
+ namespace Vulkan {
+ 
+@@ -32,6 +41,9 @@ using VideoCore::SurfaceType;
+ using namespace Common::Literals;
+ using namespace Pica::Shader::Generator;
+ 
++static_assert(MH4U_PICA_W_BUFFERING == Pica::RasterizerRegs::WBuffering);
++static_assert(MH4U_PICA_Z_BUFFERING == Pica::RasterizerRegs::ZBuffering);
++
+ constexpr u64 STREAM_BUFFER_SIZE = 64_MiB;
+ constexpr u64 UNIFORM_BUFFER_SIZE = 8_MiB;
+ constexpr u64 TEXTURE_BUFFER_SIZE = 2_MiB;
+@@ -47,6 +59,104 @@ struct DrawParams {
+     bool is_indexed;
+ };
+ 
++struct DepthProvenance {
++    PAddr color_base{};
++    u32 color_size{};
++    u32 color_bpp{};
++    u32 color_format{};
++    PAddr address{};
++    u32 width{};
++    u32 height{};
++    u32 format{};
++    u64 frame{};
++    u64 draw{};
++    u32 depth_range_raw{};
++    u32 depth_offset_raw{};
++    u32 depth_mode{};
++};
++
++struct TemporalSnapshot {
++    u64 sequence{};
++    PAddr source_color_address{};
++    u32 scale{};
++    u32 depth_range_raw{};
++    u32 depth_offset_raw{};
++    u32 depth_mode{};
++    std::vector<u8> color;
++    std::vector<float> depth;
++};
++
++struct DepthProbeState {
++    u64 frame{};
++    u64 draw{};
++    std::unordered_map<PAddr, DepthProvenance> color_depth;
++    std::unordered_map<PAddr, TemporalSnapshot> temporal_snapshots;
++};
++
++DepthProbeState depth_probe;
++
++bool DepthProbeEnabled() {
++    static const bool enabled = [] {
++        const char* value = std::getenv("MH4U_TEMPORAL_PROBE");
++        return value && value[0] == '1' && value[1] == '\0';
++    }();
++    return enabled;
++}
++
++bool DepthTrackingEnabled() {
++    return DepthProbeEnabled() || VideoCore::TemporalDepthEnabled();
++}
++
++u64 DepthProbeEnv(const char* name, u64 fallback) {
++    const char* value = std::getenv(name);
++    if (!value || !*value) {
++        return fallback;
++    }
++    char* end{};
++    const auto parsed = std::strtoull(value, &end, 10);
++    return end && *end == '\0' ? parsed : fallback;
++}
++
++bool DepthProbeLogFrame() {
++    static const u64 start = DepthProbeEnv("MH4U_TEMPORAL_PROBE_START", 0);
++    static const u64 frames = DepthProbeEnv("MH4U_TEMPORAL_PROBE_FRAMES", 300);
++    return DepthProbeEnabled() && depth_probe.frame >= start && depth_probe.frame - start < frames;
++}
++
++bool FindDepthCandidate(PAddr color_address, DepthProvenance& candidate) {
++    bool found = false;
++    for (const auto& [base, provenance] : depth_probe.color_depth) {
++        if (color_address >= base && color_address - base < provenance.color_size) {
++            if (!found || provenance.frame > candidate.frame ||
++                (provenance.frame == candidate.frame && provenance.draw > candidate.draw) ||
++                (provenance.frame == candidate.frame && provenance.draw == candidate.draw &&
++                 (provenance.color_size < candidate.color_size ||
++                  (provenance.color_size == candidate.color_size && base < candidate.color_base)))) {
++                candidate = provenance;
++                found = true;
++            }
++        }
++    }
++    return found;
++}
++
++std::filesystem::path DepthDumpDirectory() {
++    const char* value = std::getenv("MH4U_TEMPORAL_DEPTH_DUMP");
++    if (!value || !*value) {
++        return {};
++    }
++    const std::filesystem::path path{value};
++    std::error_code error;
++    const auto canonical = std::filesystem::canonical(path, error);
++    if (!path.is_absolute() || error || canonical.string().find("/.local/") == std::string::npos ||
++        !std::filesystem::is_directory(canonical)) {
++        LOG_ERROR(Render_Vulkan,
++                  "MH4U_TEMPORAL_DEPTH_DUMP must name an existing absolute directory under .local");
++        return {};
++    }
++    return canonical;
++}
++
+ [[nodiscard]] u64 TextureBufferSize(const Instance& instance) {
+     // Use the smallest texel size from the texel views
+     // which corresponds to eR32G32Sfloat
+@@ -76,6 +186,8 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
+                         TextureBufferSize(instance)},
+       async_shaders{Settings::values.async_shader_compilation.GetValue()} {
+ 
++    depth_probe.color_depth.clear();
++    depth_probe.temporal_snapshots.clear();
+     vertex_buffers.fill(stream_buffer.Handle());
+ 
+     // Query uniform buffer alignment.
+@@ -142,6 +254,26 @@ RasterizerVulkan::~RasterizerVulkan() = default;
+ void RasterizerVulkan::TickFrame() {
+     scheduler.WaitWorker();
+     res_cache.TickFrame();
++    static bool temporal_was_enabled = false;
++    const bool temporal_enabled = VideoCore::TemporalDepthEnabled();
++    if (temporal_enabled != temporal_was_enabled) {
++        depth_probe.temporal_snapshots.clear();
++        if (temporal_enabled) {
++            depth_probe.color_depth.clear();
++        }
++        temporal_was_enabled = temporal_enabled;
++    }
++    if (DepthTrackingEnabled()) {
++        ++depth_probe.frame;
++        depth_probe.draw = 0;
++        for (auto it = depth_probe.color_depth.begin(); it != depth_probe.color_depth.end();) {
++            if (depth_probe.frame - it->second.frame > 300) {
++                it = depth_probe.color_depth.erase(it);
++            } else {
++                ++it;
++            }
++        }
++    }
+ }
+ 
+ void RasterizerVulkan::LoadDefaultDiskResources(
+@@ -621,6 +753,43 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
+         });
+     }
+ 
++    if (DepthTrackingEnabled()) {
++        const auto& fb = regs.framebuffer.framebuffer;
++        const PAddr color_addr = fb.GetColorBufferPhysicalAddress();
++        const PAddr depth_addr = fb.GetDepthBufferPhysicalAddress();
++        const u64 draw = depth_probe.draw++;
++        if (succeeded && using_color_fb && using_depth_fb) {
++            const u32 color_size = fb.GetWidth() * fb.GetHeight() *
++                                   Pica::FramebufferRegs::BytesPerColorPixel(fb.color_format);
++            const u32 color_bpp = Pica::FramebufferRegs::BytesPerColorPixel(fb.color_format);
++            depth_probe.color_depth[color_addr] = {
++                color_addr,
++                color_size,
++                color_bpp,
++                static_cast<u32>(fb.color_format.Value()),
++                depth_addr,
++                fb.GetWidth(),
++                fb.GetHeight(),
++                static_cast<u32>(fb.depth_format.Value()),
++                depth_probe.frame,
++                draw,
++                regs.rasterizer.viewport_depth_range,
++                regs.rasterizer.viewport_depth_near_plane,
++                static_cast<u32>(regs.rasterizer.depthmap_enable.Value()),
++            };
++        }
++        if (DepthProbeLogFrame()) {
++            LOG_WARNING(Render_Vulkan,
++                        "MH4U_DEPTH draw frame={} draw={} succeeded={} color_addr={:#x} "
++                        "color_size={}x{} color_format={} depth_addr={:#x} depth_size={}x{} "
++                        "depth_format={} using_color={} using_depth={} write_depth={}",
++                        depth_probe.frame, draw, succeeded, color_addr, fb.GetWidth(),
++                        fb.GetHeight(), static_cast<u32>(fb.color_format.Value()), depth_addr,
++                        fb.GetWidth(), fb.GetHeight(), static_cast<u32>(fb.depth_format.Value()),
++                        using_color_fb, using_depth_fb, write_depth_fb);
++        }
++    }
++
+     vertex_batch.clear();
+     return succeeded;
+ }
+@@ -780,7 +949,227 @@ void RasterizerVulkan::ClearAll(bool flush) {
+ }
+ 
+ bool RasterizerVulkan::AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& config) {
+-    return res_cache.AccelerateDisplayTransfer(config);
++    const PAddr input = config.GetPhysicalInputAddress();
++    const PAddr output = config.GetPhysicalOutputAddress();
++    DepthProvenance candidate{};
++    bool has_candidate = false;
++    u32 candidate_offset = 0;
++    TemporalSnapshot temporal_snapshot{};
++    bool has_temporal_snapshot = false;
++    if (DepthTrackingEnabled()) {
++        has_candidate = FindDepthCandidate(input, candidate);
++        candidate_offset = has_candidate ? input - candidate.color_base : 0;
++        static bool sampled = false;
++        const u64 sample_frame = DepthProbeEnv("MH4U_TEMPORAL_DEPTH_SAMPLE_FRAME", ~u64{0});
++        const u32 row_bytes = candidate.width * candidate.color_bpp;
++        const u32 crop_y = has_candidate && row_bytes ? candidate_offset / row_bytes : 0;
++        const bool aligned_crop = has_candidate && row_bytes > 0 &&
++                                  candidate.frame == depth_probe.frame &&
++                                  candidate.width % 8 == 0 && candidate.height % 8 == 0 &&
++                                  candidate_offset % row_bytes == 0 && crop_y + 400 <= candidate.height &&
++                                  config.output_width.Value() <= candidate.width;
++        const bool validated_top = aligned_crop && candidate.width == 256 &&
++                                   candidate.height == 512 && crop_y == 112 &&
++                                   config.output_width.Value() == 240 &&
++                                   config.output_height.Value() == 400 &&
++                                   candidate.color_format == static_cast<u32>(
++                                       Pica::FramebufferRegs::ColorFormat::RGBA8) &&
++                                   candidate.format == static_cast<u32>(
++                                       Pica::FramebufferRegs::DepthFormat::D24S8) &&
++                                   config.flip_vertically.Value() == 0 &&
++                                   config.input_linear.Value() == 0 &&
++                                   config.dont_swizzle.Value() == 0 &&
++                                   config.crop_input_lines.Value() == 1 &&
++                                   static_cast<u32>(config.scaling.Value()) == 0;
++        if (validated_top && VideoCore::TemporalDepthEnabled()) {
++            VideoCore::SurfaceParams color_params;
++            color_params.addr = candidate.color_base;
++            color_params.width = candidate.width;
++            color_params.height = candidate.height;
++            color_params.stride = candidate.width;
++            color_params.is_tiled = true;
++            color_params.pixel_format = VideoCore::PixelFormat::RGBA8;
++            color_params.UpdateParams();
++            auto [color_id, color_rect] =
++                res_cache.GetSurfaceSubRect(color_params, VideoCore::ScaleMatch::Ignore, false);
++            VideoCore::SurfaceParams depth_params = color_params;
++            depth_params.addr = candidate.address;
++            depth_params.pixel_format = VideoCore::PixelFormat::D24S8;
++            depth_params.UpdateParams();
++            auto [depth_id, depth_rect] =
++                res_cache.GetSurfaceSubRect(depth_params, VideoCore::ScaleMatch::Ignore, false);
++            if (color_id && depth_id) {
++                Surface& color_surface = res_cache.GetSurface(color_id);
++                Surface& depth_surface = res_cache.GetSurface(depth_id);
++                const u32 scale = color_surface.GetResScale();
++                const Common::Rectangle<u32> expected_full_rect{
++                    0, candidate.height * scale, candidate.width * scale, 0};
++                const bool matching_scale = scale >= 1 && scale <= 4 &&
++                                            depth_surface.GetResScale() == scale &&
++                                            scale == Settings::values.resolution_factor.GetValue() &&
++                                            color_surface.addr == candidate.color_base &&
++                                            depth_surface.addr == candidate.address &&
++                                            color_surface.width == candidate.width &&
++                                            color_surface.height == candidate.height &&
++                                            depth_surface.width == candidate.width &&
++                                            depth_surface.height == candidate.height &&
++                                            color_surface.pixel_format == VideoCore::PixelFormat::RGBA8 &&
++                                            depth_surface.pixel_format == VideoCore::PixelFormat::D24S8 &&
++                                            color_rect == expected_full_rect &&
++                                            depth_rect == expected_full_rect;
++                const u32 crop_width = 240 * scale;
++                const u32 crop_height = 400 * scale;
++                const u32 bytes = crop_width * crop_height * 4;
++                if (!matching_scale) {
++                    LOG_WARNING(Render_Vulkan,
++                                "MH4U temporal scaled surface mismatch color={} depth={} setting={}",
++                                scale, depth_surface.GetResScale(),
++                                Settings::values.resolution_factor.GetValue());
++                } else {
++                    // Tiled PICA surfaces are represented top-to-bottom in the cache. The guest
++                    // rows [crop_y, crop_y + 400) therefore occupy image rows [0, 400).
++                    const Common::Rectangle<u32> rect{0, crop_height, crop_width, 0};
++                    auto color_staging = runtime.FindStaging(bytes, false);
++                    const VideoCore::BufferTextureCopy color_copy{
++                        color_staging.offset, bytes, rect, 0};
++                    color_surface.DownloadScaled(color_copy, color_staging);
++                    auto depth_staging = runtime.FindStaging(bytes, false);
++                    const VideoCore::BufferTextureCopy depth_copy{
++                        depth_staging.offset, bytes, rect, 0};
++                    depth_surface.DownloadScaled(depth_copy, depth_staging);
++                    temporal_snapshot.sequence = depth_probe.frame;
++                    temporal_snapshot.source_color_address = candidate.color_base;
++                    temporal_snapshot.scale = scale;
++                    temporal_snapshot.depth_range_raw = candidate.depth_range_raw;
++                    temporal_snapshot.depth_offset_raw = candidate.depth_offset_raw;
++                    temporal_snapshot.depth_mode = candidate.depth_mode;
++                    temporal_snapshot.color.resize(bytes);
++                    temporal_snapshot.depth.resize(crop_width * crop_height);
++                    for (u32 y = 0; y < 240 * scale; ++y) {
++                        for (u32 x = 0; x < 400 * scale; ++x) {
++                            const u32 source_x = crop_width - 1 - y;
++                            const u32 source_y = crop_height - 1 - x;
++                            const u32 source = (source_y * crop_width + source_x) * 4;
++                            const u32 output = (y * 400 * scale + x) * 4;
++                            temporal_snapshot.color[output + 0] = color_staging.mapped[source + 2];
++                            temporal_snapshot.color[output + 1] = color_staging.mapped[source + 1];
++                            temporal_snapshot.color[output + 2] = color_staging.mapped[source + 0];
++                            temporal_snapshot.color[output + 3] = color_staging.mapped[source + 3];
++                            u32 packed;
++                            std::memcpy(&packed, depth_staging.mapped.data() + source, 4);
++                            temporal_snapshot.depth[output / 4] =
++                                static_cast<float>(packed >> 8) / 16777215.0f;
++                        }
++                    }
++                    has_temporal_snapshot = true;
++                }
++            }
++        }
++        if (!sampled && aligned_crop && depth_probe.frame == sample_frame &&
++            config.output_width.Value() == 240 && config.output_height.Value() == 400 &&
++            candidate.color_format == static_cast<u32>(Pica::FramebufferRegs::ColorFormat::RGBA8) &&
++            candidate.format == static_cast<u32>(Pica::FramebufferRegs::DepthFormat::D24S8)) {
++            const u32 depth_size = candidate.width * candidate.height * 4;
++            res_cache.FlushRegion(candidate.color_base, candidate.color_size);
++            res_cache.FlushRegion(candidate.address, depth_size);
++            scheduler.Finish();
++            const u8* color = memory.GetPhysicalPointer(candidate.color_base);
++            const u8* depth = memory.GetPhysicalPointer(candidate.address);
++            if (color && depth) {
++                u32 minimum = 0xFFFFFF, maximum = 0, checksum = 2166136261;
++                for (u32 gy = 0; gy < 5; ++gy) {
++                    for (u32 gx = 0; gx < 5; ++gx) {
++                        const u32 x = gx * 239 / 4;
++                        const u32 y = std::min(crop_y + gy * 399 / 4, candidate.height - 1);
++                        const u32 coarse_y = y & ~7u;
++                        const u32 offset = VideoCore::GetMortonOffset(x, y, 4) +
++                                           coarse_y * candidate.width * 4;
++                        const u32 value = Common::Color::DecodeD24S8(depth + offset).x;
++                        minimum = std::min(minimum, value);
++                        maximum = std::max(maximum, value);
++                        checksum = (checksum ^ value) * 16777619;
++                    }
++                }
++                LOG_WARNING(Render_Vulkan,
++                            "MH4U_DEPTH sample frame={} depth={:#x} crop_color_offset={} "
++                            "crop_y={} grid=5x5 min={} max={} checksum={:#x}",
++                            depth_probe.frame, candidate.address, candidate_offset, crop_y, minimum,
++                            maximum, checksum);
++                const auto directory = DepthDumpDirectory();
++                if (!directory.empty()) {
++                    std::ofstream color_file{directory / "top-color-tiled.raw", std::ios::binary};
++                    std::ofstream depth_file{directory / "top-depth-d24s8-tiled.raw", std::ios::binary};
++                    std::ofstream metadata{directory / "top-depth-metadata.json", std::ios::binary};
++                    color_file.write(reinterpret_cast<const char*>(color), candidate.color_size);
++                    depth_file.write(reinterpret_cast<const char*>(depth), depth_size);
++                    metadata << "{\n  \"frame\": " << depth_probe.frame
++                             << ",\n  \"color_base\": " << candidate.color_base
++                             << ",\n  \"color_bytes\": " << candidate.color_size
++                             << ",\n  \"color_bpp\": " << candidate.color_bpp
++                             << ",\n  \"color_format\": \"RGBA8\""
++                             << ",\n  \"depth_base\": " << candidate.address
++                             << ",\n  \"depth_bytes\": " << depth_size
++                             << ",\n  \"surface_width\": " << candidate.width
++                             << ",\n  \"surface_height\": " << candidate.height
++                             << ",\n  \"crop_byte_offset\": " << candidate_offset
++                             << ",\n  \"crop_y\": " << crop_y
++                             << ",\n  \"crop_width\": " << config.output_width.Value()
++                             << ",\n  \"crop_height\": " << config.output_height.Value()
++                             << ",\n  \"layout\": \"PICA 8x8 Morton tiled\""
++                             << ",\n  \"depth_format\": \"D24S8\""
++                             << ",\n  \"flip_vertically\": " << config.flip_vertically.Value()
++                             << ",\n  \"input_linear\": " << config.input_linear.Value()
++                             << ",\n  \"dont_swizzle\": " << config.dont_swizzle.Value()
++                             << ",\n  \"crop_input_lines\": " << config.crop_input_lines.Value()
++                             << ",\n  \"scaling\": " << static_cast<u32>(config.scaling.Value())
++                             << "\n}\n";
++                    if (!color_file || !depth_file || !metadata) {
++                        LOG_ERROR(Render_Vulkan, "MH4U depth dump write failed in {}",
++                                  directory.string());
++                    } else {
++                        LOG_WARNING(Render_Vulkan, "MH4U depth dump written to {}",
++                                    directory.string());
++                    }
++                }
++                sampled = true;
++            }
++        }
++    }
++    const bool accelerated = res_cache.AccelerateDisplayTransfer(config);
++    if (DepthTrackingEnabled()) {
++        if (accelerated && has_candidate) {
++            candidate.color_base = output;
++            candidate.color_bpp = Pica::FramebufferRegs::BytesPerColorPixel(
++                static_cast<Pica::FramebufferRegs::ColorFormat>(config.output_format.Value()));
++            candidate.color_format = static_cast<u32>(config.output_format.Value());
++            candidate.color_size = config.output_width.Value() * config.output_height.Value() *
++                                   candidate.color_bpp;
++            depth_probe.color_depth[output] = candidate;
++            if (has_temporal_snapshot) {
++                depth_probe.temporal_snapshots[output] = std::move(temporal_snapshot);
++            } else {
++                depth_probe.temporal_snapshots.erase(output);
++            }
++        } else {
++            depth_probe.color_depth.erase(output);
++            depth_probe.temporal_snapshots.erase(output);
++        }
++    }
++    if (DepthProbeLogFrame()) {
++        LOG_WARNING(Render_Vulkan,
++                    "MH4U_DEPTH transfer frame={} input={:#x} output={:#x} input_size={}x{} "
++                    "output_size={}x{} input_format={} output_format={} accelerated={} "
++                    "depth_candidate={:#x} color_byte_offset={} origin_frame={} origin_draw={}",
++                    depth_probe.frame, input, output, config.input_width.Value(),
++                    config.input_height.Value(), config.output_width.Value(),
++                    config.output_height.Value(), static_cast<u32>(config.input_format.Value()),
++                    static_cast<u32>(config.output_format.Value()), accelerated,
++                    has_candidate ? candidate.address : 0,
++                    candidate_offset,
++                    has_candidate ? candidate.frame : 0,
++                    has_candidate ? candidate.draw : 0);
++    }
++    return accelerated;
+ }
+ 
+ bool RasterizerVulkan::AccelerateTextureCopy(const Pica::DisplayTransferConfig& config) {
+@@ -798,6 +1187,56 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
+         return false;
+     }
+ 
++    if (VideoCore::TemporalDepthEnabled()) {
++        const auto found = depth_probe.temporal_snapshots.find(framebuffer_addr);
++        if (found != depth_probe.temporal_snapshots.end()) {
++            const auto& snapshot = found->second;
++            const mh4u_temporal_depth_frame frame{
++                MH4U_TEMPORAL_DEPTH_ABI_VERSION,
++                sizeof(mh4u_temporal_depth_frame),
++                snapshot.sequence,
++                depth_probe.frame,
++                snapshot.source_color_address,
++                framebuffer_addr,
++                400 * snapshot.scale,
++                240 * snapshot.scale,
++                snapshot.scale,
++                400 * snapshot.scale * 4,
++                400 * snapshot.scale * 4,
++                MH4U_TEMPORAL_DEPTH_TOP_UPRIGHT | MH4U_TEMPORAL_DEPTH_COLOR_BGRA8 |
++                    MH4U_TEMPORAL_DEPTH_DEPTH_R32F |
++                    MH4U_TEMPORAL_DEPTH_VALIDATED_SCALE,
++                snapshot.depth_mode,
++                snapshot.depth_range_raw,
++                snapshot.depth_offset_raw,
++                Pica::f24::FromRaw(snapshot.depth_range_raw).ToFloat32(),
++                Pica::f24::FromRaw(snapshot.depth_offset_raw).ToFloat32(),
++                snapshot.color.data(),
++                snapshot.depth.data(),
++            };
++            VideoCore::PublishTemporalDepth(frame);
++        }
++    }
++
++    if (DepthProbeLogFrame()) {
++        const auto provenance = depth_probe.color_depth.find(framebuffer_addr);
++        LOG_WARNING(Render_Vulkan,
++                    "MH4U_DEPTH display frame={} source={:#x} size={}x{} stride={} "
++                    "color_format={} depth_candidate={:#x} depth_size={}x{} depth_format={} "
++                    "origin_frame={} origin_draw={} age={}",
++                    depth_probe.frame, framebuffer_addr, config.width.Value(), config.height.Value(),
++                    pixel_stride, static_cast<u32>(config.color_format.Value()),
++                    provenance == depth_probe.color_depth.end() ? 0 : provenance->second.address,
++                    provenance == depth_probe.color_depth.end() ? 0 : provenance->second.width,
++                    provenance == depth_probe.color_depth.end() ? 0 : provenance->second.height,
++                    provenance == depth_probe.color_depth.end() ? 0 : provenance->second.format,
++                    provenance == depth_probe.color_depth.end() ? 0 : provenance->second.frame,
++                    provenance == depth_probe.color_depth.end() ? 0 : provenance->second.draw,
++                    provenance == depth_probe.color_depth.end()
++                        ? 0
++                        : depth_probe.frame - provenance->second.frame);
++    }
++
+     VideoCore::SurfaceParams src_params;
+     src_params.addr = framebuffer_addr;
+     src_params.width = std::min(config.width.Value(), pixel_stride);
+diff --git a/src/video_core/renderer_vulkan/vk_texture_runtime.cpp b/src/video_core/renderer_vulkan/vk_texture_runtime.cpp
+index de747c2..91d5680 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_runtime.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_runtime.cpp
+@@ -1112,6 +1112,61 @@ void Surface::Download(const VideoCore::BufferTextureCopy& download,
+         });
+ }
+ 
++void Surface::DownloadScaled(const VideoCore::BufferTextureCopy& download,
++                             const VideoCore::StagingData& staging) {
++    SCOPE_EXIT({
++        scheduler.Finish();
++        runtime.download_buffer.Commit(staging.size);
++    });
++
++    runtime.renderpass_cache.EndRendering();
++    if (pixel_format == PixelFormat::D24S8) {
++        runtime.blit_helper.DepthToBuffer(*this, runtime.download_buffer.Handle(), download);
++        return;
++    }
++
++    const RecordParams params = {
++        .aspect = Aspect(),
++        .pipeline_flags = PipelineStageFlags(),
++        .src_access = AccessFlags(),
++        .src_image = Image(),
++    };
++    scheduler.Record(
++        [buffer = runtime.download_buffer.Handle(), params, download](vk::CommandBuffer cmdbuf) {
++            const auto rect = download.texture_rect;
++            const vk::BufferImageCopy copy = {
++                .bufferOffset = download.buffer_offset,
++                .bufferRowLength = rect.GetWidth(),
++                .bufferImageHeight = rect.GetHeight(),
++                .imageSubresource{params.aspect, download.texture_level, 0, 1},
++                .imageOffset = {static_cast<s32>(rect.left), static_cast<s32>(rect.bottom), 0},
++                .imageExtent = {rect.GetWidth(), rect.GetHeight(), 1},
++            };
++            const vk::ImageMemoryBarrier before = {
++                .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
++                .dstAccessMask = vk::AccessFlagBits::eTransferRead,
++                .oldLayout = vk::ImageLayout::eGeneral,
++                .newLayout = vk::ImageLayout::eTransferSrcOptimal,
++                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++                .image = params.src_image,
++                .subresourceRange = MakeSubresourceRange(params.aspect, download.texture_level),
++            };
++            auto after = before;
++            after.srcAccessMask = vk::AccessFlagBits::eTransferRead;
++            after.dstAccessMask = vk::AccessFlagBits::eMemoryRead |
++                                  vk::AccessFlagBits::eMemoryWrite;
++            after.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
++            after.newLayout = vk::ImageLayout::eGeneral;
++            cmdbuf.pipelineBarrier(params.pipeline_flags, vk::PipelineStageFlagBits::eTransfer,
++                                   vk::DependencyFlagBits::eByRegion, {}, {}, before);
++            cmdbuf.copyImageToBuffer(params.src_image, vk::ImageLayout::eTransferSrcOptimal, buffer,
++                                     copy);
++            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, params.pipeline_flags,
++                                   vk::DependencyFlagBits::eByRegion, {}, {}, after);
++        });
++}
++
+ void Surface::ScaleUp(u32 new_scale) {
+     if (res_scale == new_scale || new_scale == 1) {
+         return;
+diff --git a/src/video_core/renderer_vulkan/vk_texture_runtime.h b/src/video_core/renderer_vulkan/vk_texture_runtime.h
+index 8ce827e..7f4fd55 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_runtime.h
++++ b/src/video_core/renderer_vulkan/vk_texture_runtime.h
+@@ -256,6 +256,10 @@ public:
+     void Download(const VideoCore::BufferTextureCopy& download,
+                   const VideoCore::StagingData& staging);
+ 
++    /// Downloads the current, internally-scaled image without resolving it to guest resolution.
++    void DownloadScaled(const VideoCore::BufferTextureCopy& download,
++                        const VideoCore::StagingData& staging);
++
+     /// Scales up the surface to match the new resolution scale.
+     void ScaleUp(u32 new_scale);
+ 
+diff --git a/src/video_core/temporal_depth.cpp b/src/video_core/temporal_depth.cpp
+new file mode 100644
+index 0000000..11722e9
+--- /dev/null
++++ b/src/video_core/temporal_depth.cpp
+@@ -0,0 +1,24 @@
++#include "video_core/temporal_depth.h"
++
++namespace VideoCore {
++namespace {
++mh4u_temporal_depth_sink depth_sink{};
++}
++
++void SetTemporalDepthSink(const mh4u_temporal_depth_sink& sink) {
++    depth_sink = sink;
++}
++
++bool TemporalDepthEnabled() {
++    return depth_sink.abi_version == MH4U_TEMPORAL_DEPTH_ABI_VERSION &&
++           depth_sink.struct_size >= sizeof(mh4u_temporal_depth_sink) && depth_sink.enabled &&
++           depth_sink.callback && depth_sink.enabled(depth_sink.user);
++}
++
++void PublishTemporalDepth(const mh4u_temporal_depth_frame& frame) {
++    if (TemporalDepthEnabled()) {
++        depth_sink.callback(depth_sink.user, &frame);
++    }
++}
++
++} // namespace VideoCore
+diff --git a/src/video_core/temporal_depth.h b/src/video_core/temporal_depth.h
+new file mode 100644
+index 0000000..d31a506
+--- /dev/null
++++ b/src/video_core/temporal_depth.h
+@@ -0,0 +1,11 @@
++#pragma once
++
++#include "temporal_frame.h"
++
++namespace VideoCore {
++
++void SetTemporalDepthSink(const mh4u_temporal_depth_sink& sink);
++bool TemporalDepthEnabled();
++void PublishTemporalDepth(const mh4u_temporal_depth_frame& frame);
++
++} // namespace VideoCore
