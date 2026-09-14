@@ -116,10 +116,10 @@ index e155731..6afb531 100644
  }
 diff --git a/src/core/arm/aot/arm_aot.h b/src/core/arm/aot/arm_aot.h
 new file mode 100644
-index 0000000..e365a1c
+index 0000000..d08bb0c
 --- /dev/null
 +++ b/src/core/arm/aot/arm_aot.h
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,76 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
 +#pragma once
@@ -189,6 +189,8 @@ index 0000000..e365a1c
 +    bool has_run{};
 +    bool identity_verified{};
 +    bool reschedule_requested{};
++    bool local_exclusive_valid{};
++    u32 local_exclusive_address{};
 +    u64 run_count{};
 +    u64 block_count{};
 +};
@@ -196,10 +198,10 @@ index 0000000..e365a1c
 +} // namespace Core
 diff --git a/src/core/arm/aot/arm_aot.cpp b/src/core/arm/aot/arm_aot.cpp
 new file mode 100644
-index 0000000..318bceb
+index 0000000..7a7b22a
 --- /dev/null
 +++ b/src/core/arm/aot/arm_aot.cpp
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,322 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
 +#include "core/arm/aot/arm_aot.h"
@@ -223,7 +225,8 @@ index 0000000..318bceb
 +class ARM_Aot::Callbacks {
 +public:
 +    explicit Callbacks(ARM_Aot& parent_) : parent(parent_), svc_context(parent.system) {
-+        table = {this, Read, Write, CallSvc, AddTicks, CoprocessorRead32, CoprocessorWrite32};
++        table = {this, Read, Write, CallSvc, AddTicks, CoprocessorRead32, CoprocessorWrite32,
++                 ExclusiveRead32, ExclusiveWrite32, ClearExclusive};
 +    }
 +
 +    mh4u::aot::Callbacks table{};
@@ -311,6 +314,40 @@ index 0000000..318bceb
 +        return true;
 +    }
 +
++    static bool ExclusiveRead32(void* context, u32 address, u32* value) {
++        auto& self = *static_cast<Callbacks*>(context);
++        if (!value || (address & 3U) != 0 || !ValidRange(self.parent, address, 32)) return false;
++        *value = self.parent.exclusive_monitor.ExclusiveRead32(self.parent.GetID(), address);
++        self.parent.local_exclusive_valid = true;
++        self.parent.local_exclusive_address = address;
++        return true;
++    }
++
++    static bool ExclusiveWrite32(void* context, u32 address, u32 value, bool* succeeded) {
++        auto& self = *static_cast<Callbacks*>(context);
++        if (!succeeded) return false;
++        const bool local_match = self.parent.local_exclusive_valid &&
++                                 self.parent.local_exclusive_address == address;
++        self.parent.local_exclusive_valid = false;
++        if (!local_match) {
++            self.parent.exclusive_monitor.ClearExclusive(self.parent.GetID());
++            *succeeded = false;
++            return true;
++        }
++        if ((address & 3U) != 0 || !ValidRange(self.parent, address, 32) ||
++            self.parent.OverlapsCompiledCode(address, 32)) return false;
++        *succeeded = self.parent.exclusive_monitor.ExclusiveWrite32(self.parent.GetID(), address,
++                                                                    value);
++        return true;
++    }
++
++    static bool ClearExclusive(void* context) {
++        auto& self = *static_cast<Callbacks*>(context);
++        self.parent.local_exclusive_valid = false;
++        self.parent.exclusive_monitor.ClearExclusive(self.parent.GetID());
++        return true;
++    }
++
 +    ARM_Aot& parent;
 +    Kernel::SVCContext svc_context;
 +};
@@ -336,8 +373,9 @@ index 0000000..318bceb
 +    ++run_count;
 +    const auto result = mh4u_aot_execute(&state, &callbacks->table);
 +    executing = false;
-+    LOG_DEBUG(Core_ARM11, "AOT run={} blocks={} exit={} pc={:08x}", run_count, block_count,
-+              static_cast<u32>(result.exit), result.next_pc);
++    LOG_DEBUG(Core_ARM11, "AOT run={} blocks={} exit={} pc={:08x} cpsr={:08x} fpscr={:08x}",
++              run_count, block_count, static_cast<u32>(result.exit), result.next_pc, state.cpsr,
++              state.fpscr);
 +    switch (result.exit) {
 +    case mh4u::aot::BlockExit::Dispatch:
 +    case mh4u::aot::BlockExit::SupervisorCall:
@@ -365,6 +403,7 @@ index 0000000..318bceb
 +}
 +
 +void ARM_Aot::ClearExclusiveState() {
++    local_exclusive_valid = false;
 +    exclusive_monitor.ClearExclusive(GetID());
 +}
 +
@@ -419,6 +458,7 @@ index 0000000..318bceb
 +}
 +
 +void ARM_Aot::LoadContext(const ThreadContext& ctx) {
++    ClearExclusiveState();
 +    state.regs = ctx.cpu_registers;
 +    state.cpsr = ctx.cpsr;
 +    state.ext_regs = ctx.fpu_registers;
@@ -477,10 +517,10 @@ index 0000000..318bceb
 +        detail += fmt::format(" (exit={}, pc={:08x}, detail={:08x})",
 +                              static_cast<u32>(result->exit), result->next_pc, result->detail);
 +    }
++    detail += fmt::format(" [cpsr={:08x}, fpscr={:08x}]", state.cpsr, state.fpscr);
 +    LOG_CRITICAL(Core_ARM11, "{}", detail);
 +    SetBreakFlag();
 +    system.SetStatus(System::ResultStatus::ErrorCoreExceptionRaised, detail.c_str());
 +}
 +
 +} // namespace Core
-

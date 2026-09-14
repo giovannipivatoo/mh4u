@@ -38,6 +38,12 @@ using mh4u::aot::fixture::Fixture;
 
 std::string Hex(std::uint64_t value);
 
+struct EntryDescriptor {
+    std::uint32_t pc{};
+    std::uint32_t cpsr{};
+    std::uint32_t fpscr{};
+};
+
 struct Options {
     std::filesystem::path fixture;
     std::filesystem::path binary;
@@ -52,6 +58,8 @@ struct Options {
     std::size_t max_blocks{1};
     std::size_t max_instructions{1024};
     std::size_t max_dispatch_steps{1000000};
+    bool continue_after_svc{};
+    std::vector<EntryDescriptor> extra_entries;
 };
 
 std::uint64_t ParseNumber(const std::string& text) {
@@ -66,6 +74,18 @@ std::uint32_t ParseU32(const std::string& text) {
     const auto value = ParseNumber(text);
     if (value > UINT32_MAX) throw std::runtime_error("32-bit value out of range: " + text);
     return static_cast<std::uint32_t>(value);
+}
+
+EntryDescriptor ParseEntryDescriptor(const std::string& text) {
+    const auto first = text.find(',');
+    const auto second = first == std::string::npos ? first : text.find(',', first + 1);
+    if (first == std::string::npos || second == std::string::npos ||
+        text.find(',', second + 1) != std::string::npos) {
+        throw std::runtime_error("entry descriptor must be PC,CPSR,FPSCR: " + text);
+    }
+    return {ParseU32(text.substr(0, first)),
+            ParseU32(text.substr(first + 1, second - first - 1)),
+            ParseU32(text.substr(second + 1))};
 }
 
 Options ParseOptions(const int argc, char** argv) {
@@ -87,6 +107,14 @@ Options ParseOptions(const int argc, char** argv) {
         else if (key == "--max-blocks") options.max_blocks = ParseNumber(value);
         else if (key == "--max-instructions") options.max_instructions = ParseNumber(value);
         else if (key == "--max-dispatch-steps") options.max_dispatch_steps = ParseNumber(value);
+        else if (key == "--entry-descriptor") {
+            options.extra_entries.push_back(ParseEntryDescriptor(value));
+        }
+        else if (key == "--continue-after-svc") {
+            const auto enabled = ParseNumber(value);
+            if (enabled > 1) throw std::runtime_error("--continue-after-svc must be 0 or 1");
+            options.continue_after_svc = enabled != 0;
+        }
         else throw std::runtime_error("unknown option: " + key);
     }
     if ((options.fixture.empty() == options.binary.empty()) || options.output.empty() ||
@@ -94,7 +122,7 @@ Options ParseOptions(const int argc, char** argv) {
         throw std::runtime_error(
             "usage: aot-generator (--fixture FILE | --binary FILE --base N --pc N --cpsr N) "
             "--input-sha256 SHA256 --artifact-root DIR --output CPP --manifest JSON "
-            "[--fpscr N]");
+            "[--fpscr N] [--entry-descriptor PC,CPSR,FPSCR]");
     }
     if (options.max_blocks == 0 || options.max_instructions == 0 || options.max_dispatch_steps == 0) {
         throw std::runtime_error("translation limits must be positive");
@@ -167,7 +195,8 @@ public:
                "  using namespace mh4u::aot;\n"
                "  if (!state || !callbacks || !callbacks->read || !callbacks->write ||\n"
                "      !callbacks->svc || !callbacks->add_ticks || !callbacks->coprocessor_read32 ||\n"
-               "      !callbacks->coprocessor_write32)\n"
+               "      !callbacks->coprocessor_write32 || !callbacks->exclusive_read32 ||\n"
+               "      !callbacks->exclusive_write32 || !callbacks->clear_exclusive)\n"
                "    return {BlockExit::CallbackFault, state ? state->regs[15] : 0, 0, 0};\n"
                "  std::uint64_t remaining = 0;\n";
         const A32::LocationDescriptor entry{block.Location()};
@@ -254,6 +283,14 @@ private:
         case IR::Opcode::A32GetCFlag:
             out << "  [[maybe_unused]] const bool " << name << " = ((state->cpsr >> 29) & 1U) != 0;\n";
             return;
+        case IR::Opcode::A32GetFpscr:
+            out << "  [[maybe_unused]] const std::uint32_t " << name
+                << " = state->fpscr;\n";
+            return;
+        case IR::Opcode::A32SetFpscr:
+            out << "  state->fpscr = static_cast<std::uint32_t>(" << Expr(inst.GetArg(0))
+                << ") & 0xfff7009fU;\n";
+            return;
         case IR::Opcode::Not32:
             out << "  [[maybe_unused]] const std::uint32_t " << name << " = ~static_cast<std::uint32_t>("
                 << Expr(inst.GetArg(0)) << ");\n";
@@ -266,6 +303,11 @@ private:
                 << symbol << ' ' << Expr(inst.GetArg(1)) << ";\n";
             return;
         }
+        case IR::Opcode::AndNot32:
+            out << "  [[maybe_unused]] const std::uint32_t " << name << " = "
+                << Expr(inst.GetArg(0)) << " & ~static_cast<std::uint32_t>("
+                << Expr(inst.GetArg(1)) << ");\n";
+            return;
         case IR::Opcode::Add32:
         case IR::Opcode::Sub32:
             arithmetic[&inst] = true;
@@ -288,6 +330,11 @@ private:
                 << "), " << Expr(inst.GetArg(2)) << " != 0);\n";
             return;
         }
+        case IR::Opcode::RotateRightExtended:
+            arithmetic[&inst] = true;
+            out << "  [[maybe_unused]] const auto " << name << " = RotateRightExtended("
+                << Expr(inst.GetArg(0)) << ", " << Expr(inst.GetArg(1)) << " != 0);\n";
+            return;
         case IR::Opcode::GetNZCVFromOp:
             out << "  [[maybe_unused]] const std::uint32_t " << name << " = "
                 << "v" << names.at(inst.GetArg(0).GetInst()) << ".nzcv;\n";
@@ -343,10 +390,35 @@ private:
             out << "  [[maybe_unused]] const std::uint32_t " << name << " = static_cast<std::uint8_t>("
                 << Expr(inst.GetArg(0)) << ");\n";
             return;
+        case IR::Opcode::SignExtendByteToWord:
+            out << "  [[maybe_unused]] const std::uint32_t " << name
+                << " = static_cast<std::uint32_t>(static_cast<std::int32_t>("
+                   "static_cast<std::int8_t>("
+                << Expr(inst.GetArg(0)) << ")));\n";
+            return;
         case IR::Opcode::LeastSignificantHalf:
         case IR::Opcode::ZeroExtendHalfToWord:
             out << "  [[maybe_unused]] const std::uint32_t " << name << " = static_cast<std::uint16_t>("
                 << Expr(inst.GetArg(0)) << ");\n";
+            return;
+        case IR::Opcode::Pack2x32To1x64:
+            out << "  [[maybe_unused]] const std::uint64_t " << name
+                << " = static_cast<std::uint64_t>(" << Expr(inst.GetArg(0))
+                << ") | (static_cast<std::uint64_t>(" << Expr(inst.GetArg(1)) << ") << 32);\n";
+            return;
+        case IR::Opcode::LeastSignificantWord:
+            out << "  [[maybe_unused]] const std::uint32_t " << name
+                << " = static_cast<std::uint32_t>(" << Expr(inst.GetArg(0)) << ");\n";
+            return;
+        case IR::Opcode::MostSignificantWord:
+            arithmetic[&inst] = true;
+            out << "  [[maybe_unused]] const std::uint32_t " << name
+                << "Value = static_cast<std::uint32_t>(" << Expr(inst.GetArg(0)) << " >> 32);\n"
+                << "  [[maybe_unused]] const AddResult32 " << name << "{" << name << "Value, ("
+                << name << "Value & 0x80000000U) | (" << name
+                << "Value == 0 ? 0x40000000U : 0U) | "
+                << "static_cast<std::uint32_t>(((" << Expr(inst.GetArg(0))
+                << " >> 31) & 1U) << 29)};\n";
             return;
         case IR::Opcode::A32SetCpsrNZCV:
         case IR::Opcode::A32SetCpsrNZCVRaw:
@@ -364,27 +436,50 @@ private:
             return;
         case IR::Opcode::A32ReadMemory8:
         case IR::Opcode::A32ReadMemory16:
-        case IR::Opcode::A32ReadMemory32: {
+        case IR::Opcode::A32ReadMemory32:
+        case IR::Opcode::A32ReadMemory64: {
             const unsigned bits = op == IR::Opcode::A32ReadMemory8 ? 8 :
-                                  op == IR::Opcode::A32ReadMemory16 ? 16 : 32;
+                                  op == IR::Opcode::A32ReadMemory16 ? 16 :
+                                  op == IR::Opcode::A32ReadMemory32 ? 32 : 64;
             out << "  std::uint64_t raw" << names.at(&inst) << " = 0;\n"
                 << "  if (!Read(*callbacks, " << Expr(inst.GetArg(1)) << ", " << bits << ", raw"
                 << names.at(&inst) << ")) return {BlockExit::MemoryFault, state->regs[15], "
                 << Expr(inst.GetArg(1)) << ", remaining};\n"
-                << "  const std::uint32_t " << name << " = static_cast<std::uint32_t>(raw"
-                << names.at(&inst) << ");\n";
+                << "  const std::uint" << bits << "_t " << name
+                << " = static_cast<std::uint" << bits << "_t>(raw" << names.at(&inst) << ");\n";
             return;
         }
         case IR::Opcode::A32WriteMemory8:
         case IR::Opcode::A32WriteMemory16:
-        case IR::Opcode::A32WriteMemory32: {
+        case IR::Opcode::A32WriteMemory32:
+        case IR::Opcode::A32WriteMemory64: {
             const unsigned bits = op == IR::Opcode::A32WriteMemory8 ? 8 :
-                                  op == IR::Opcode::A32WriteMemory16 ? 16 : 32;
+                                  op == IR::Opcode::A32WriteMemory16 ? 16 :
+                                  op == IR::Opcode::A32WriteMemory32 ? 32 : 64;
             out << "  if (!Write(*callbacks, " << Expr(inst.GetArg(1)) << ", " << bits << ", "
                 << Expr(inst.GetArg(2)) << ")) return {BlockExit::MemoryFault, state->regs[15], "
                 << Expr(inst.GetArg(1)) << ", remaining};\n";
             return;
         }
+        case IR::Opcode::A32ExclusiveReadMemory32:
+            out << "  std::uint32_t " << name << " = 0;\n"
+                << "  if (!ExclusiveRead32(*callbacks, " << Expr(inst.GetArg(1)) << ", " << name
+                << ")) return {BlockExit::MemoryFault, state->regs[15], "
+                << Expr(inst.GetArg(1)) << ", remaining};\n";
+            return;
+        case IR::Opcode::A32ExclusiveWriteMemory32:
+            out << "  bool succeeded" << names.at(&inst) << " = false;\n"
+                << "  if (!ExclusiveWrite32(*callbacks, " << Expr(inst.GetArg(1)) << ", "
+                << Expr(inst.GetArg(2)) << ", succeeded" << names.at(&inst)
+                << ")) return {BlockExit::MemoryFault, state->regs[15], "
+                << Expr(inst.GetArg(1)) << ", remaining};\n"
+                << "  const std::uint32_t " << name << " = succeeded" << names.at(&inst)
+                << " ? 0U : 1U;\n";
+            return;
+        case IR::Opcode::A32ClearExclusive:
+            out << "  if (!ClearExclusive(*callbacks)) return {BlockExit::CallbackFault, "
+                   "state->regs[15], 0, remaining};\n";
+            return;
         case IR::Opcode::A32CallSupervisor:
             EmitTicks();
             out << "  bool halt" << names.at(&inst) << " = false;\n"
@@ -496,6 +591,30 @@ std::vector<A32::LocationDescriptor> DirectTargets(const IR::Block& block) {
 bool HasSupervisorCall(const IR::Block& block) {
     for (const IR::Inst& inst : block) {
         if (inst.GetOpcode() == IR::Opcode::A32CallSupervisor) return true;
+    }
+    return false;
+}
+
+bool TerminalHasUnresolvedIndirect(const IR::Terminal& terminal) {
+    if (boost::get<IR::Term::ReturnToDispatch>(&terminal) ||
+        boost::get<IR::Term::PopRSBHint>(&terminal) ||
+        boost::get<IR::Term::FastDispatchHint>(&terminal)) {
+        return true;
+    }
+    if (const auto* branch = boost::get<IR::Term::If>(&terminal)) {
+        return TerminalHasUnresolvedIndirect(branch->then_) ||
+               TerminalHasUnresolvedIndirect(branch->else_);
+    }
+    if (const auto* halt = boost::get<IR::Term::CheckHalt>(&terminal)) {
+        return TerminalHasUnresolvedIndirect(halt->else_);
+    }
+    return false;
+}
+
+bool HasUnresolvedIndirect(const IR::Block& block) {
+    if (TerminalHasUnresolvedIndirect(block.GetTerminal())) return true;
+    for (const IR::Inst& inst : block) {
+        if (inst.GetOpcode() == IR::Opcode::A32BXWritePC) return true;
     }
     return false;
 }
@@ -631,16 +750,37 @@ int main(int argc, char** argv) {
         if ((cpsr & 0x0600fc00U) != 0) {
             throw std::runtime_error("Thumb IT state is not supported by this AOT slice");
         }
+        if (((cpsr & 0x20U) == 0 && (pc & 3U) != 0) ||
+            ((cpsr & 0x20U) != 0 && (pc & 1U) != 0)) {
+            throw std::runtime_error("entry PC is not aligned for its ARM/Thumb mode");
+        }
         const A32::LocationDescriptor descriptor{pc, A32::PSR{cpsr}, A32::FPSCR{fpscr}};
         std::deque<A32::LocationDescriptor> pending{descriptor};
         std::unordered_set<std::uint64_t> discovered{descriptor.UniqueHash()};
+        std::vector<A32::LocationDescriptor> entry_descriptors{descriptor};
+        for (const EntryDescriptor& entry : options.extra_entries) {
+            if ((entry.cpsr & 0x0600fc00U) != 0) {
+                throw std::runtime_error("Thumb IT state is not supported by this AOT slice");
+            }
+            if (((entry.cpsr & 0x20U) == 0 && (entry.pc & 3U) != 0) ||
+                ((entry.cpsr & 0x20U) != 0 && (entry.pc & 1U) != 0)) {
+                throw std::runtime_error("entry PC is not aligned for its ARM/Thumb mode");
+            }
+            A32::LocationDescriptor extra{entry.pc, A32::PSR{entry.cpsr}, A32::FPSCR{entry.fpscr}};
+            if (discovered.insert(extra.UniqueHash()).second) {
+                pending.push_back(extra);
+                entry_descriptors.push_back(extra);
+            }
+        }
         std::vector<IR::Block> blocks;
         std::vector<std::string> emitted_sources;
         std::vector<std::string> opcodes;
+        std::vector<A32::LocationDescriptor> unresolved_indirect;
         std::size_t ir_instruction_count = 0;
         bool reached_svc = false;
         std::uint32_t first_next_pc = 0;
-        while (!pending.empty() && blocks.size() < options.max_blocks && !reached_svc) {
+        while (!pending.empty() && blocks.size() < options.max_blocks &&
+               (!reached_svc || options.continue_after_svc)) {
             A32::LocationDescriptor location = pending.front();
             pending.pop_front();
             IR::Block block = A32::Translate(location, &source, translation_options);
@@ -652,7 +792,8 @@ int main(int argc, char** argv) {
             if (blocks.empty()) first_next_pc = emission.next_pc;
             emitted_sources.push_back(std::move(emission.source));
             opcodes.insert(opcodes.end(), emission.opcodes.begin(), emission.opcodes.end());
-            reached_svc = HasSupervisorCall(block);
+            reached_svc |= HasSupervisorCall(block);
+            if (HasUnresolvedIndirect(block)) unresolved_indirect.push_back(location);
             for (const A32::LocationDescriptor& target : DirectTargets(block)) {
                 if (discovered.insert(target.UniqueHash()).second) pending.push_back(target);
             }
@@ -665,6 +806,13 @@ int main(int argc, char** argv) {
         WriteFile(options.output, generated.str());
         std::uint64_t total_cycles = 0;
         for (const IR::Block& block : blocks) total_cycles += block.CycleCount();
+        const bool static_direct_frontier_exhausted = pending.empty();
+        const bool coverage_complete = static_direct_frontier_exhausted && unresolved_indirect.empty();
+        const char* stop_reason = !options.continue_after_svc && reached_svc
+                                      ? "svc-discovered"
+                                  : static_direct_frontier_exhausted
+                                      ? "static-direct-frontier-exhausted"
+                                      : "max-blocks";
         std::ostringstream manifest;
         manifest << "{\n  \"format\": \"mh4u-aot-v1\",\n"
                  << "  \"input_kind\": \"" << input_kind << "\",\n"
@@ -675,22 +823,48 @@ int main(int argc, char** argv) {
                  << "  \"tick_model\": \"Azahar Core::TicksForInstruction\",\n"
                  << "  \"pc\": \"" << Hex(pc) << "\",\n"
                  << "  \"thumb\": " << ((cpsr & 0x20U) ? "true" : "false") << ",\n"
+                 << "  \"entry_descriptor_count\": " << entry_descriptors.size() << ",\n"
+                 << "  \"entry_descriptors\": [";
+        for (std::size_t index = 0; index < entry_descriptors.size(); ++index) {
+            if (index) manifest << ", ";
+            const auto& entry = entry_descriptors[index];
+            manifest << "{\"pc\":\"" << Hex(entry.PC()) << "\",\"cpsr_mode\":\""
+                     << Hex(entry.CPSR().Value() & 0x0600fe20U)
+                     << "\",\"fpscr_mode\":\""
+                     << Hex(entry.FPSCR().Value() & 0x07f70000U) << "\"}";
+        }
+        manifest << "],\n"
                  << "  \"cycle_count\": " << total_cycles << ",\n"
                  << "  \"next_pc\": \"" << Hex(first_next_pc) << "\",\n"
                  << "  \"block_count\": " << blocks.size() << ",\n"
                  << "  \"ir_instruction_count\": " << ir_instruction_count << ",\n"
                  << "  \"guest_instruction_fetches\": " << source.code_reads << ",\n"
+                 << "  \"max_blocks\": " << options.max_blocks << ",\n"
+                 << "  \"max_guest_instruction_fetches\": " << options.max_instructions << ",\n"
+                 << "  \"max_dispatch_steps\": " << options.max_dispatch_steps << ",\n"
                  << "  \"static_direct_graph_reached_svc\": "
                  << (reached_svc ? "true" : "false") << ",\n"
-                 << "  \"coverage_complete\": " << (pending.empty() ? "true" : "false") << ",\n"
-                 << "  \"stop_reason\": \""
-                 << (reached_svc ? "svc-discovered" : pending.empty() ? "frontier-empty" : "max-blocks")
-                 << "\",\n"
+                 << "  \"continue_after_svc\": "
+                 << (options.continue_after_svc ? "true" : "false") << ",\n"
+                 << "  \"static_direct_frontier_exhausted\": "
+                 << (static_direct_frontier_exhausted ? "true" : "false") << ",\n"
+                 << "  \"coverage_complete\": " << (coverage_complete ? "true" : "false") << ",\n"
+                 << "  \"stop_reason\": \"" << stop_reason << "\",\n"
                  << "  \"frontier_count\": " << pending.size() << ",\n"
                  << "  \"frontier\": [";
         for (std::size_t index = 0; index < pending.size(); ++index) {
             if (index) manifest << ", ";
             const A32::LocationDescriptor location{pending[index]};
+            manifest << "{\"pc\":\"" << Hex(location.PC()) << "\",\"cpsr_mode\":\""
+                     << Hex(location.CPSR().Value() & 0x0600fe20U)
+                     << "\",\"fpscr_mode\":\""
+                     << Hex(location.FPSCR().Value() & 0x07f70000U) << "\"}";
+        }
+        manifest << "],\n  \"unresolved_indirect_count\": " << unresolved_indirect.size()
+                 << ",\n  \"unresolved_indirect\": [";
+        for (std::size_t index = 0; index < unresolved_indirect.size(); ++index) {
+            if (index) manifest << ", ";
+            const A32::LocationDescriptor& location = unresolved_indirect[index];
             manifest << "{\"pc\":\"" << Hex(location.PC()) << "\",\"cpsr_mode\":\""
                      << Hex(location.CPSR().Value() & 0x0600fe20U)
                      << "\",\"fpscr_mode\":\""

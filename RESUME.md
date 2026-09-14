@@ -19,6 +19,14 @@ nessuna prova di game frame nativo. Prossimo slice: import/export depth/stencil.
 Root build combinata aggiornata e 36/36 CTest PASS. Non scambiare questi progressi
 in corso per il contenuto già verificato del checkpoint pubblicato.
 
+Checkpoint Metal `d7cb7c4` pubblicato. AOT successivo stabilizzato: 16/16 test
+dedicati PASS; artifact core512 con entry FPSCR03c00000 e continuation03000000.
+Manifest512 blocchi/1748 fetch/6900 IR, frontier62, indirect113, coveragefalse.
+Smoke reale: SVC iniziale, poi43 ulteriori blockcallback, MissingBlock0x1067ec
+con CPSR60000010/FPSCR03000000, identity verificata, zero frame/no timeout.
+Prossimo slice AOT: aggiungere entry osservate offline e ampliare copertura con
+gli stessi limiti/fault espliciti; nessun JIT fallback.
+
 - Sol `sol_port_first_step` possiede `src/aot`, `tools/aot`, `tests/aot`,
   `cmake/Aot.cmake` e CMakeLists.txt. Generazione persistente Dynarmic IR→C++→runner
   senza Dynarmic, differenziali ARM/Thumb e matrici registri/shift. Catena reale

@@ -2,6 +2,7 @@
 
 #include <dynarmic/interface/A32/a32.h>
 #include <dynarmic/interface/A32/config.h>
+#include <dynarmic/interface/exclusive_monitor.h>
 
 #include "core/arm/dynarmic/arm_tick_counts.h"
 #include "core/arm/dynarmic/arm_dynarmic_cp15.h"
@@ -53,6 +54,12 @@ public:
         MemoryWrite32(address, static_cast<std::uint32_t>(value));
         MemoryWrite32(address + 4, static_cast<std::uint32_t>(value >> 32));
     }
+    bool MemoryWriteExclusive32(const std::uint32_t address, const std::uint32_t value,
+                                const std::uint32_t expected) override {
+        if (MemoryRead32(address) != expected) return false;
+        MemoryWrite32(address, value);
+        return true;
+    }
     void InterpreterFallback(std::uint32_t pc, std::size_t) override {
         throw std::runtime_error("unexpected interpreter fallback at " + std::to_string(pc));
     }
@@ -99,6 +106,8 @@ int main(int argc, char** argv) {
         Callbacks callbacks{host};
         Dynarmic::A32::UserConfig config;
         config.callbacks = &callbacks;
+        Dynarmic::ExclusiveMonitor exclusive_monitor{1};
+        config.global_monitor = &exclusive_monitor;
         config.arch_version = Dynarmic::A32::ArchVersion::v6K;
         config.define_unpredictable_behaviour = true;
         CP15State cp15_state{host.cp15_thread_uprw, host.cp15_thread_uro};

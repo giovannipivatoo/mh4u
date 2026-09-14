@@ -112,6 +112,148 @@ add_test(NAME aot-shift-register-matrix COMMAND "${Python3_EXECUTABLE}"
   --runner "$<TARGET_FILE:mh4u-aot-runner-shift>"
   --fixture "${shift_fixture}" --shift-matrix)
 
+set(exclusive_fixture "${CMAKE_SOURCE_DIR}/tests/aot/exclusive.fixture")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${exclusive_fixture}")
+file(SHA256 "${exclusive_fixture}" exclusive_sha)
+set(exclusive_generated "${MH4U_AOT_ARTIFACT_ROOT}/exclusive.cpp")
+set(exclusive_manifest "${MH4U_AOT_ARTIFACT_ROOT}/exclusive.json")
+add_custom_command(OUTPUT "${exclusive_generated}" "${exclusive_manifest}"
+  COMMAND "$<TARGET_FILE:mh4u-aot-generator>" --fixture "${exclusive_fixture}"
+    --input-sha256 "${exclusive_sha}" --artifact-root "${CMAKE_SOURCE_DIR}/.local"
+    --output "${exclusive_generated}" --manifest "${exclusive_manifest}"
+  DEPENDS mh4u-aot-generator "${exclusive_fixture}"
+  VERBATIM)
+add_executable(mh4u-aot-runner-exclusive
+  "${CMAKE_SOURCE_DIR}/tools/aot/runner.cpp" "${exclusive_generated}")
+target_link_libraries(mh4u-aot-runner-exclusive PRIVATE mh4u-aot-fixture)
+target_compile_options(mh4u-aot-runner-exclusive PRIVATE -Wall -Wextra -Werror)
+add_test(NAME aot-exclusive-differential COMMAND "${Python3_EXECUTABLE}"
+  "${CMAKE_SOURCE_DIR}/tests/aot/compare.py"
+  --jit "$<TARGET_FILE:mh4u-aot-jit-reference>"
+  --runner "$<TARGET_FILE:mh4u-aot-runner-exclusive>"
+  --fixture "${exclusive_fixture}" --exclusive)
+
+set(fpscr_fixture "${CMAKE_SOURCE_DIR}/tests/aot/fpscr.fixture")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${fpscr_fixture}")
+file(SHA256 "${fpscr_fixture}" fpscr_sha)
+set(fpscr_generated "${MH4U_AOT_ARTIFACT_ROOT}/fpscr.cpp")
+set(fpscr_manifest "${MH4U_AOT_ARTIFACT_ROOT}/fpscr.json")
+add_custom_command(OUTPUT "${fpscr_generated}" "${fpscr_manifest}"
+  COMMAND "$<TARGET_FILE:mh4u-aot-generator>" --fixture "${fpscr_fixture}"
+    --max-blocks 2
+    --input-sha256 "${fpscr_sha}" --artifact-root "${CMAKE_SOURCE_DIR}/.local"
+    --output "${fpscr_generated}" --manifest "${fpscr_manifest}"
+  DEPENDS mh4u-aot-generator "${fpscr_fixture}"
+  VERBATIM)
+add_executable(mh4u-aot-runner-fpscr
+  "${CMAKE_SOURCE_DIR}/tools/aot/runner.cpp" "${fpscr_generated}")
+target_link_libraries(mh4u-aot-runner-fpscr PRIVATE mh4u-aot-fixture)
+target_compile_options(mh4u-aot-runner-fpscr PRIVATE -Wall -Wextra -Werror)
+add_test(NAME aot-fpscr-mode-missing-diagnosed COMMAND mh4u-aot-runner-fpscr
+  "${fpscr_fixture}" --missing)
+
+set(fpscr_mode_generated "${MH4U_AOT_ARTIFACT_ROOT}/fpscr-mode.cpp")
+set(fpscr_mode_manifest "${MH4U_AOT_ARTIFACT_ROOT}/fpscr-mode.json")
+add_custom_command(OUTPUT "${fpscr_mode_generated}" "${fpscr_mode_manifest}"
+  COMMAND "$<TARGET_FILE:mh4u-aot-generator>" --fixture "${fpscr_fixture}"
+    --entry-descriptor 0x1008,0x10,0x03000000 --max-blocks 2
+    --input-sha256 "${fpscr_sha}" --artifact-root "${CMAKE_SOURCE_DIR}/.local"
+    --output "${fpscr_mode_generated}" --manifest "${fpscr_mode_manifest}"
+  DEPENDS mh4u-aot-generator "${fpscr_fixture}"
+  VERBATIM)
+add_executable(mh4u-aot-runner-fpscr-mode
+  "${CMAKE_SOURCE_DIR}/tools/aot/runner.cpp" "${fpscr_mode_generated}")
+target_link_libraries(mh4u-aot-runner-fpscr-mode PRIVATE mh4u-aot-fixture)
+target_compile_options(mh4u-aot-runner-fpscr-mode PRIVATE -Wall -Wextra -Werror)
+add_test(NAME aot-fpscr-differential COMMAND "${Python3_EXECUTABLE}"
+  "${CMAKE_SOURCE_DIR}/tests/aot/compare.py"
+  --jit "$<TARGET_FILE:mh4u-aot-jit-reference>"
+  --runner "$<TARGET_FILE:mh4u-aot-runner-fpscr-mode>" --fixture "${fpscr_fixture}")
+
+set(signextend_fixture "${CMAKE_SOURCE_DIR}/tests/aot/signextend.fixture")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${signextend_fixture}")
+file(SHA256 "${signextend_fixture}" signextend_sha)
+set(signextend_generated "${MH4U_AOT_ARTIFACT_ROOT}/signextend.cpp")
+set(signextend_manifest "${MH4U_AOT_ARTIFACT_ROOT}/signextend.json")
+add_custom_command(OUTPUT "${signextend_generated}" "${signextend_manifest}"
+  COMMAND "$<TARGET_FILE:mh4u-aot-generator>" --fixture "${signextend_fixture}"
+    --input-sha256 "${signextend_sha}" --artifact-root "${CMAKE_SOURCE_DIR}/.local"
+    --output "${signextend_generated}" --manifest "${signextend_manifest}"
+  DEPENDS mh4u-aot-generator "${signextend_fixture}"
+  VERBATIM)
+add_executable(mh4u-aot-runner-signextend
+  "${CMAKE_SOURCE_DIR}/tools/aot/runner.cpp" "${signextend_generated}")
+target_link_libraries(mh4u-aot-runner-signextend PRIVATE mh4u-aot-fixture)
+target_compile_options(mh4u-aot-runner-signextend PRIVATE -Wall -Wextra -Werror)
+add_test(NAME aot-signextend-differential COMMAND "${Python3_EXECUTABLE}"
+  "${CMAKE_SOURCE_DIR}/tests/aot/compare.py"
+  --jit "$<TARGET_FILE:mh4u-aot-jit-reference>"
+  --runner "$<TARGET_FILE:mh4u-aot-runner-signextend>"
+  --fixture "${signextend_fixture}" --signextend)
+
+set(andnot_fixture "${CMAKE_SOURCE_DIR}/tests/aot/andnot.fixture")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${andnot_fixture}")
+file(SHA256 "${andnot_fixture}" andnot_sha)
+set(andnot_generated "${MH4U_AOT_ARTIFACT_ROOT}/andnot.cpp")
+set(andnot_manifest "${MH4U_AOT_ARTIFACT_ROOT}/andnot.json")
+add_custom_command(OUTPUT "${andnot_generated}" "${andnot_manifest}"
+  COMMAND "$<TARGET_FILE:mh4u-aot-generator>" --fixture "${andnot_fixture}"
+    --input-sha256 "${andnot_sha}" --artifact-root "${CMAKE_SOURCE_DIR}/.local"
+    --output "${andnot_generated}" --manifest "${andnot_manifest}"
+  DEPENDS mh4u-aot-generator "${andnot_fixture}"
+  VERBATIM)
+add_executable(mh4u-aot-runner-andnot
+  "${CMAKE_SOURCE_DIR}/tools/aot/runner.cpp" "${andnot_generated}")
+target_link_libraries(mh4u-aot-runner-andnot PRIVATE mh4u-aot-fixture)
+target_compile_options(mh4u-aot-runner-andnot PRIVATE -Wall -Wextra -Werror)
+add_test(NAME aot-andnot-register-matrix COMMAND "${Python3_EXECUTABLE}"
+  "${CMAKE_SOURCE_DIR}/tests/aot/compare.py"
+  --jit "$<TARGET_FILE:mh4u-aot-jit-reference>"
+  --runner "$<TARGET_FILE:mh4u-aot-runner-andnot>"
+  --fixture "${andnot_fixture}" --matrix)
+
+set(memory64_fixture "${CMAKE_SOURCE_DIR}/tests/aot/memory64.fixture")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${memory64_fixture}")
+file(SHA256 "${memory64_fixture}" memory64_sha)
+set(memory64_generated "${MH4U_AOT_ARTIFACT_ROOT}/memory64.cpp")
+set(memory64_manifest "${MH4U_AOT_ARTIFACT_ROOT}/memory64.json")
+add_custom_command(OUTPUT "${memory64_generated}" "${memory64_manifest}"
+  COMMAND "$<TARGET_FILE:mh4u-aot-generator>" --fixture "${memory64_fixture}"
+    --input-sha256 "${memory64_sha}" --artifact-root "${CMAKE_SOURCE_DIR}/.local"
+    --output "${memory64_generated}" --manifest "${memory64_manifest}"
+  DEPENDS mh4u-aot-generator "${memory64_fixture}"
+  VERBATIM)
+add_executable(mh4u-aot-runner-memory64
+  "${CMAKE_SOURCE_DIR}/tools/aot/runner.cpp" "${memory64_generated}")
+target_link_libraries(mh4u-aot-runner-memory64 PRIVATE mh4u-aot-fixture)
+target_compile_options(mh4u-aot-runner-memory64 PRIVATE -Wall -Wextra -Werror)
+add_test(NAME aot-memory64-differential COMMAND "${Python3_EXECUTABLE}"
+  "${CMAKE_SOURCE_DIR}/tests/aot/compare.py"
+  --jit "$<TARGET_FILE:mh4u-aot-jit-reference>"
+  --runner "$<TARGET_FILE:mh4u-aot-runner-memory64>"
+  --fixture "${memory64_fixture}")
+
+set(rrx_fixture "${CMAKE_SOURCE_DIR}/tests/aot/rrx.fixture")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rrx_fixture}")
+file(SHA256 "${rrx_fixture}" rrx_sha)
+set(rrx_generated "${MH4U_AOT_ARTIFACT_ROOT}/rrx.cpp")
+set(rrx_manifest "${MH4U_AOT_ARTIFACT_ROOT}/rrx.json")
+add_custom_command(OUTPUT "${rrx_generated}" "${rrx_manifest}"
+  COMMAND "$<TARGET_FILE:mh4u-aot-generator>" --fixture "${rrx_fixture}"
+    --input-sha256 "${rrx_sha}" --artifact-root "${CMAKE_SOURCE_DIR}/.local"
+    --output "${rrx_generated}" --manifest "${rrx_manifest}"
+  DEPENDS mh4u-aot-generator "${rrx_fixture}"
+  VERBATIM)
+add_executable(mh4u-aot-runner-rrx
+  "${CMAKE_SOURCE_DIR}/tools/aot/runner.cpp" "${rrx_generated}")
+target_link_libraries(mh4u-aot-runner-rrx PRIVATE mh4u-aot-fixture)
+target_compile_options(mh4u-aot-runner-rrx PRIVATE -Wall -Wextra -Werror)
+add_test(NAME aot-rrx-register-matrix COMMAND "${Python3_EXECUTABLE}"
+  "${CMAKE_SOURCE_DIR}/tests/aot/compare.py"
+  --jit "$<TARGET_FILE:mh4u-aot-jit-reference>"
+  --runner "$<TARGET_FILE:mh4u-aot-runner-rrx>"
+  --fixture "${rrx_fixture}" --matrix)
+
 set(loop_fixture "${CMAKE_SOURCE_DIR}/tests/aot/loop.fixture")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${loop_fixture}")
 file(SHA256 "${loop_fixture}" loop_sha)

@@ -26,6 +26,9 @@ struct Host {
     std::uint32_t cp15_thread_uro{};
     std::uint64_t coprocessor_reads{};
     std::uint64_t coprocessor_writes{};
+    bool exclusive_valid{};
+    std::uint32_t exclusive_address{};
+    std::uint32_t exclusive_value{};
 };
 
 bool Load(const std::filesystem::path& path, Fixture& fixture, std::string& error);

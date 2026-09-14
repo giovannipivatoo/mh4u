@@ -24,6 +24,8 @@ def main() -> int:
     parser.add_argument("--matrix", action="store_true")
     parser.add_argument("--shift-matrix", action="store_true")
     parser.add_argument("--dispatcher-controls", action="store_true")
+    parser.add_argument("--exclusive", action="store_true")
+    parser.add_argument("--signextend", action="store_true")
     args = parser.parse_args()
     if args.generator:
         output = pathlib.Path(args.artifact_root) / "must-not-exist.cpp"
@@ -46,13 +48,25 @@ def main() -> int:
         assert data["architecture"] == "ARMv6K"
         assert data["tick_model"] == "Azahar Core::TicksForInstruction"
         assert data["pc"] == "0x100000"
+        assert data["entry_descriptor_count"] == len(data["entry_descriptors"])
+        assert data["entry_descriptors"][0]["pc"] == data["pc"]
+        assert 0 < data["block_count"] <= data["max_blocks"]
+        assert data["guest_instruction_fetches"] <= data["max_guest_instruction_fetches"]
+        assert data["max_dispatch_steps"] > 0
         assert data["next_pc"] == "0x100024"
         assert data["emitted_blocks_supported"] is True
+        assert data["frontier_count"] == len(data["frontier"])
+        assert data["unresolved_indirect_count"] == len(data["unresolved_indirect"])
+        assert data["coverage_complete"] is (
+            data["static_direct_frontier_exhausted"] and
+            data["unresolved_indirect_count"] == 0)
         if data["block_count"] > 1:
             assert data["static_direct_graph_reached_svc"] is True
+            assert data["continue_after_svc"] is False
             assert data["coverage_complete"] is False
             assert data["stop_reason"] == "svc-discovered"
-            assert data["frontier_count"] == len(data["frontier"])
+            assert data["static_direct_frontier_exhausted"] is False
+            assert data["unresolved_indirect_count"] > 0
             assert 1 < data["block_count"] <= 64
             assert 0 < data["guest_instruction_fetches"] <= 4096
             expected = run([args.jit, args.fixture, args.code_bin])
@@ -136,6 +150,15 @@ def main() -> int:
                     path = pathlib.Path(temporary.name) / f"case-{carry}-{value:x}-{amount}.fixture"
                     path.write_text(text)
                     fixtures.append(str(path))
+    elif args.signextend:
+        template = pathlib.Path(args.fixture).read_text()
+        temporary = tempfile.TemporaryDirectory(prefix="aot-signextend-",
+                                                dir=pathlib.Path(args.runner).parent)
+        fixtures = []
+        for value in (0, 1, 0x7f, 0x80, 0xff):
+            path = pathlib.Path(temporary.name) / f"case-{value:x}.fixture"
+            path.write_text(template.replace("byte 0x1800 0", f"byte 0x1800 {value:#x}"))
+            fixtures.append(str(path))
     for fixture in fixtures:
         expected = run([args.jit, fixture])
         actual = run([args.runner, fixture])
@@ -143,6 +166,15 @@ def main() -> int:
             sys.stderr.write(f"Fixture: {fixture}\nJIT reference:\n" + expected.decode())
             sys.stderr.write("AOT runner:\n" + actual.decode())
             return 1
+        if args.exclusive:
+            values = dict(line.split("=", 1) for line in actual.decode().splitlines())
+            assert values["r1"] == "44332211"
+            assert values["r2"] == "00000000"
+            assert values["r4"] == "00000001"
+            assert values["r6"] == "deadbeef"
+            assert values["r7"] == "00000001"
+            assert values["r10"] == "cafebabe"
+            assert values["memory"][0x1800 * 2:0x1804 * 2] == "bebafeca"
     symbols = subprocess.run(["nm", args.runner], check=True, text=True,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
     if "Dynarmic" in symbols:

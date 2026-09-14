@@ -119,6 +119,42 @@ bool CoprocessorWriteCallback(void* context, const std::uint8_t info[8],
     return true;
 }
 
+bool ExclusiveRead32Callback(void* context, const std::uint32_t address,
+                             std::uint32_t* value) {
+    if (!context || !value || (address & 3U) != 0) return false;
+    auto& host = *static_cast<Host*>(context);
+    std::uint64_t raw = 0;
+    if (!ReadCallback(&host, address, 32, &raw)) return false;
+    *value = static_cast<std::uint32_t>(raw);
+    host.exclusive_valid = true;
+    host.exclusive_address = address;
+    host.exclusive_value = *value;
+    return true;
+}
+
+bool ExclusiveWrite32Callback(void* context, const std::uint32_t address,
+                              const std::uint32_t value, bool* succeeded) {
+    if (!context || !succeeded) return false;
+    auto& host = *static_cast<Host*>(context);
+    if (!host.exclusive_valid || host.exclusive_address != address) {
+        host.exclusive_valid = false;
+        *succeeded = false;
+        return true;
+    }
+    host.exclusive_valid = false;
+    if ((address & 3U) != 0) return false;
+    std::uint64_t current = 0;
+    if (!ReadCallback(&host, address, 32, &current)) return false;
+    *succeeded = host.exclusive_value == static_cast<std::uint32_t>(current);
+    return !*succeeded || WriteCallback(&host, address, 32, value);
+}
+
+bool ClearExclusiveCallback(void* context) {
+    if (!context) return false;
+    static_cast<Host*>(context)->exclusive_valid = false;
+    return true;
+}
+
 }  // namespace
 
 bool Load(const std::filesystem::path& path, Fixture& fixture, std::string& error) {
@@ -222,7 +258,8 @@ bool MapBinary(const std::filesystem::path& path, const std::uint32_t base, Host
 
 Callbacks MakeCallbacks(Host& host) {
     return {&host, ReadCallback, WriteCallback, SvcCallback, TicksCallback,
-            CoprocessorReadCallback, CoprocessorWriteCallback};
+            CoprocessorReadCallback, CoprocessorWriteCallback, ExclusiveRead32Callback,
+            ExclusiveWrite32Callback, ClearExclusiveCallback};
 }
 
 std::string Format(const GuestCpuState& state, const Host& host) {

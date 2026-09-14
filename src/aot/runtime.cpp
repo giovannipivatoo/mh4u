@@ -66,6 +66,11 @@ AddResult32 RotateRight32(const std::uint32_t value, const std::uint8_t amount,
     return {shifted, Nz(shifted) | (((shifted >> 31) & 1U) << 29)};
 }
 
+AddResult32 RotateRightExtended(const std::uint32_t value, const bool carry) {
+    const std::uint32_t result = (value >> 1) | (carry ? 0x80000000U : 0U);
+    return {result, Nz(result) | ((value & 1U) << 29)};
+}
+
 bool ConditionPassed(const std::uint32_t cpsr, const std::uint8_t condition) {
     const bool n = (cpsr & 0x80000000U) != 0;
     const bool z = (cpsr & 0x40000000U) != 0;
@@ -120,6 +125,22 @@ bool CoprocessorWrite32(const Callbacks& callbacks, const std::uint8_t info[8],
                         const std::uint32_t value) {
     return callbacks.coprocessor_write32 &&
            callbacks.coprocessor_write32(callbacks.context, info, value);
+}
+
+bool ExclusiveRead32(const Callbacks& callbacks, const std::uint32_t address,
+                     std::uint32_t& value) {
+    return callbacks.exclusive_read32 &&
+           callbacks.exclusive_read32(callbacks.context, address, &value);
+}
+
+bool ExclusiveWrite32(const Callbacks& callbacks, const std::uint32_t address,
+                      const std::uint32_t value, bool& succeeded) {
+    return callbacks.exclusive_write32 &&
+           callbacks.exclusive_write32(callbacks.context, address, value, &succeeded);
+}
+
+bool ClearExclusive(const Callbacks& callbacks) {
+    return callbacks.clear_exclusive && callbacks.clear_exclusive(callbacks.context);
 }
 
 void SetLocation(GuestCpuState& state, const std::uint32_t pc, const std::uint32_t cpsr_mode,

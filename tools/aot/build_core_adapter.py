@@ -64,8 +64,10 @@ def main() -> int:
     if digest != EXPECTED_CODE_SHA256:
         raise RuntimeError(f"title code SHA-256 mismatch: {digest}")
     run(args.generator, "--binary", CODE, "--base", "0x100000", "--pc", "0x100000",
-        "--cpsr", "0x10", "--fpscr", "0x03c00010", "--max-blocks", "64",
-        "--max-instructions", "4096", "--max-dispatch-steps", "1000000",
+        "--cpsr", "0x10", "--fpscr", "0x03c00010", "--max-blocks", "512",
+        "--max-instructions", "32768", "--max-dispatch-steps", "1000000",
+        "--continue-after-svc", "1",
+        "--entry-descriptor", "0x10b6f0,0x10,0x03000000",
         "--input-sha256", digest, "--artifact-root", ROOT / ".local",
         "--output", ARTIFACT, "--manifest", MANIFEST)
     openssl = run("brew", "--prefix", "openssl@3", capture=True).stdout.strip()

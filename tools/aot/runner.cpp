@@ -5,7 +5,7 @@
 
 int main(int argc, char** argv) {
     if (argc != 2 && argc != 3) {
-        std::cerr << "usage: aot-runner FIXTURE [--linked|--dispatch|--limit]\n";
+        std::cerr << "usage: aot-runner FIXTURE [--linked|--dispatch|--limit|--missing]\n";
         return 2;
     }
     mh4u::aot::fixture::Fixture fixture;
@@ -25,6 +25,7 @@ int main(int argc, char** argv) {
         if (option == "--linked") expected = mh4u::aot::BlockExit::Linked;
         else if (option == "--dispatch") expected = mh4u::aot::BlockExit::Dispatch;
         else if (option == "--limit") expected = mh4u::aot::BlockExit::DispatcherLimit;
+        else if (option == "--missing") expected = mh4u::aot::BlockExit::MissingBlock;
         else {
             std::cerr << "aot-runner: unknown expected exit " << option << '\n';
             return 2;

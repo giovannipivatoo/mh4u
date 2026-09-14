@@ -60,6 +60,9 @@ def main() -> int:
     failure = re.search(
         r"AOT execution stopped \(exit=(\d+), pc=([0-9a-fA-F]+), detail=([0-9a-fA-F]+)\)",
         stderr)
+    failure_state = re.search(
+        r"AOT execution stopped .*\[cpsr=([0-9a-fA-F]+), fpscr=([0-9a-fA-F]+)\]",
+        stderr)
     runs = re.findall(r"AOT run=(\d+) blocks=(\d+) exit=(\d+) pc=([0-9a-fA-F]+)", stderr)
     expected_failure = failure is not None and int(failure.group(1)) == 6
     identity_verified = "AOT identity verified:" in stderr
@@ -74,6 +77,8 @@ def main() -> int:
         "aot_exit": int(failure.group(1)) if failure else None,
         "aot_pc": f"0x{failure.group(2)}" if failure else None,
         "aot_detail": f"0x{failure.group(3)}" if failure else None,
+        "aot_cpsr": f"0x{failure_state.group(1)}" if failure_state else None,
+        "aot_fpscr": f"0x{failure_state.group(2)}" if failure_state else None,
         "aot_run_count": int(runs[-1][0]) if runs else 0,
         "aot_block_callbacks": int(runs[-1][1]) if runs else 0,
         "first_run_exit": int(runs[0][2]) if runs else None,
@@ -91,6 +96,7 @@ def main() -> int:
     print(json.dumps(report, indent=2))
     passed = (not timed_out and returncode not in (None, 0) and expected_failure and
               identity_verified and report["first_run_exit"] == 2 and
+              report["aot_cpsr"] is not None and report["aot_fpscr"] is not None and
               report["frame_limit_reached"] is False and report["video_frames"] == 0)
     return 0 if passed else 1
 

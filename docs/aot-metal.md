@@ -40,8 +40,10 @@ python3 tools/aot/core_smoke.py \
 
 Use a fresh state directory on every run. This smoke specifically checks the
 current expected missing-block stop, not successful frame production. The core
-verifies the translated instruction words before executing, reaches the real HLE
-SVC, then stops at missing PC `0x00107328` without a frame or timeout. Its AOT build
+verifies the translated instruction words before executing and reaches the real
+HLE SVC. The current 512-block artifact includes the observed FPSCR mode change;
+it executes another 43 blocks after that SVC, then stops at missing PC
+`0x001067ec` without a frame or timeout. Its AOT build
 forces the CPU adapter; the ordinary host's `cpu: jit` option label is not evidence
 of the CPU actually selected inside that experimental core. The smoke records
 that distinction and requires AOT identity/exit telemetry.
@@ -75,7 +77,13 @@ executes 62 compiled blocks to the first SVC at PC `0x107328`, consuming 477,324
 Azahar ticks. Registers, memory changes and ticks match a separate JIT process.
 That test supplies a synthetic memory mapping and SVC callback; it does not prove
 kernel boot, gameplay or complete code coverage. Static graph discovery stops at
-the first discovered SVC and records an incomplete frontier in the manifest.
+the first discovered SVC by default. The core build enables bounded continuation
+and accepts explicit additional PC/CPSR/FPSCR entry descriptors. Its manifest
+records 512 blocks, a remaining frontier of 62 entries and 113 unresolved indirect
+points; coverage remains incomplete. The initial entry uses FPSCR mode
+`0x03c00000`; the observed continuation at `0x0010b6f0` uses `0x03000000`.
+Additional differential tests cover exclusive accesses, FPSCR state changes,
+signed byte extension, BIC, 64-bit memory accesses and rotate through carry.
 
 Metal fixtures exercise multiple draws sharing a target, texture/TEV behavior,
 quantized depth comparisons and rejection of unsupported states. Rendering a
