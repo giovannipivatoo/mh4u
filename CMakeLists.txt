@@ -59,6 +59,14 @@ add_custom_target(native-app ALL
 
 enable_testing()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+option(MH4U_ENABLE_AOT "Build the experimental persistent ARM AOT slice" OFF)
+option(MH4U_ENABLE_PICA_METAL "Build the experimental direct PICA Metal slice" OFF)
+if(MH4U_ENABLE_AOT)
+  include(cmake/Aot.cmake)
+endif()
+if(MH4U_ENABLE_PICA_METAL)
+  include(cmake/PicaMetal.cmake)
+endif()
 add_test(NAME relocated-savestate-paths COMMAND "${Python3_EXECUTABLE}"
   "${CMAKE_SOURCE_DIR}/tests/check_savestate_paths.py" "$<TARGET_FILE:savestate-path-probe>")
 add_test(NAME local-input-boundaries COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s tests -v)

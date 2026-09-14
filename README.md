@@ -8,6 +8,10 @@ A local native macOS host specialized for the supplied **Monster Hunter 4 Ultima
 
 ## Local use
 
+The `feat/apple-silicon-aot-metal` branch also contains opt-in
+[AOT and direct Metal experiments](docs/aot-metal.md). These build separate tools
+and tests; the playable runtime described below still uses JIT/Vulkan.
+
 All preparation/build/test commands have been run by the agent. Open `~/Applications/MH4U Runtime.app` or double-click `MH4U.command` to launch the development runtime. The installed app uses verified private copies under Application Support and requires no Desktop-folder permission. The launcher prepares missing local inputs, builds the host and denies network access to the running game. It validates the exact title/code profile and local CXI hash before execution.
 
 ```sh

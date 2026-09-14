@@ -1,0 +1,139 @@
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 1f5d0a58b..4100c931e 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -660,6 +660,114 @@ void RasterizerVulkan::DrawTriangles() {
+         return;
+     }
+ 
++    // Private, bounded diagnostic trace for the direct Metal bring-up. It records
++    // expanded post-shader outputs, exact registers, and only the bounded texture0
++    // span required by the captured draw.
++    static u64 trace_batch = 0;
++    static u64 trace_attempts = 0;
++    const u64 current_batch = trace_batch++;
++    static const u64 trace_start = [] {
++        const char* value = std::getenv("MH4U_PICA_TRACE_START");
++        if (!value || !*value) return u64{0};
++        char* end{};
++        const u64 parsed = std::strtoull(value, &end, 10);
++        return end && *end == '\0' ? parsed : u64{0};
++    }();
++    static const u64 trace_limit = [] {
++        const char* value = std::getenv("MH4U_PICA_TRACE_LIMIT");
++        if (!value || !*value) return u64{0};
++        char* end{};
++        const u64 parsed = std::strtoull(value, &end, 10);
++        return end && *end == '\0' ? std::min<u64>(parsed, 8) : u64{0};
++    }();
++    static const std::filesystem::path trace_directory = [] {
++        const char* value = std::getenv("MH4U_PICA_TRACE_DIR");
++        if (!value || !*value) return std::filesystem::path{};
++        const std::filesystem::path requested{value};
++        std::error_code error;
++        const auto canonical = std::filesystem::canonical(requested, error);
++        if (!requested.is_absolute() || error ||
++            canonical.string().find("/.local/") == std::string::npos ||
++            !std::filesystem::is_directory(canonical)) {
++            LOG_ERROR(Render_Vulkan,
++                      "MH4U_PICA_TRACE_DIR must be an existing absolute directory under .local");
++            return std::filesystem::path{};
++        }
++        return canonical;
++    }();
++    if (!trace_directory.empty() && trace_limit && current_batch >= trace_start &&
++        trace_attempts < trace_limit) {
++        ++trace_attempts;
++        if (vertex_batch.size() > 65536) {
++            LOG_ERROR(Render_Vulkan, "Refusing oversized MH4U PICA trace batch {} with {} vertices",
++                      current_batch, vertex_batch.size());
++        } else {
++        constexpr u64 max_texture_bytes = 4 * 1024 * 1024;
++        std::span<const u8> texture_bytes{};
++        if (regs.texturing.main_config.texture0_enable) {
++            const auto& config = regs.texturing.texture0;
++            const auto format = regs.texturing.texture0_format.Value();
++            const u64 width = config.width;
++            const u64 height = config.height;
++            if (format <= Pica::TexturingRegs::TextureFormat::ETC1A4 && width && height &&
++                width % 8 == 0 && height % 8 == 0) {
++                const u64 size = Pica::Texture::CalculateTileSize(format) * (width / 8) *
++                                 (height / 8);
++                const PAddr address = config.GetPhysicalAddress();
++                if (size && size <= max_texture_bytes) {
++                    // FlushRegion synchronously downloads any GPU-dirty overlapping surface
++                    // before the diagnostic reads guest RAM.
++                    res_cache.FlushRegion(address, static_cast<u32>(size));
++                }
++                const auto texture_ref = memory.GetPhysicalRef(address);
++                if (size && size <= max_texture_bytes && texture_ref &&
++                    texture_ref.GetSize() >= size) {
++                    texture_bytes = texture_ref.GetReadBytes<u8>(size);
++                } else {
++                    LOG_ERROR(Render_Vulkan,
++                              "Refusing MH4U PICA trace texture0 address={:#x} size={}", address,
++                              size);
++                }
++            } else {
++                LOG_ERROR(Render_Vulkan,
++                          "Refusing MH4U PICA trace texture0 format={} dimensions={}x{}",
++                          static_cast<u32>(format), width, height);
++            }
++        }
++        const auto path = trace_directory /
++                          fmt::format("batch-{:08}.bin", current_batch);
++        std::ofstream out(path, std::ios::binary | std::ios::trunc);
++        const auto write_u32 = [&out](u32 value) {
++            out.write(reinterpret_cast<const char*>(&value), sizeof(value));
++        };
++        const auto write_f32 = [&out](float value) {
++            out.write(reinterpret_cast<const char*>(&value), sizeof(value));
++        };
++        constexpr char magic[8] = {'M', 'H', '4', 'U', 'P', 'M', 'T', '1'};
++        out.write(magic, sizeof(magic));
++        write_u32(2); // format version
++        write_u32(Pica::RegsInternal::NUM_REGS);
++        write_u32(static_cast<u32>(vertex_batch.size()));
++        write_u32(10); // position4, primary-color4, texcoord0-2
++        write_u32(static_cast<u32>(texture_bytes.size()));
++        out.write(reinterpret_cast<const char*>(regs.reg_array.data()),
++                  regs.reg_array.size() * sizeof(u32));
++        for (const auto& vertex : vertex_batch) {
++            for (u32 i = 0; i < 4; ++i) write_f32(vertex.position[i]);
++            for (u32 i = 0; i < 4; ++i) write_f32(vertex.color[i]);
++            for (u32 i = 0; i < 2; ++i) write_f32(vertex.tex_coord0[i]);
++        }
++        out.write(reinterpret_cast<const char*>(texture_bytes.data()), texture_bytes.size());
++        out.flush();
++        if (out) {
++            LOG_WARNING(Render_Vulkan, "MH4U_PICA_TRACE batch={} vertices={} path={}",
++                        current_batch, vertex_batch.size(), path.string());
++        } else {
++            LOG_ERROR(Render_Vulkan, "Failed to write MH4U PICA trace {}", path.string());
++        }
++        }
++    }
++
+     pipeline_info.state.rasterization.topology.Assign(Pica::PipelineRegs::TriangleTopology::List);
+     pipeline_info.state.vertex_layout = software_layout;
+ 
+diff --git a/src/citra_libretro/core_settings.cpp b/src/citra_libretro/core_settings.cpp
+index 228b70b32..05bd73962 100644
+--- a/src/citra_libretro/core_settings.cpp
++++ b/src/citra_libretro/core_settings.cpp
+@@ -4,3 +4,5 @@
+ 
+ #include <boost/hana/string.hpp>
++
++#include <cstdlib>
+ 
+@@ -959,4 +961,9 @@ static void ParseGraphicsOptions(void) {
+     Settings::values.use_hw_shader = LibRetro::FetchVariable(config::graphics::use_hw_shader,
+                                                              config::enabled) == config::enabled;
++    const char* pica_trace_cpu_vertex = std::getenv("MH4U_PICA_TRACE_CPU_VERTEX");
++    if (pica_trace_cpu_vertex && pica_trace_cpu_vertex[0] == '1' &&
++        pica_trace_cpu_vertex[1] == '\0') {
++        Settings::values.use_hw_shader = false;
++    }
+ 
+     Settings::values.use_shader_jit = LibRetro::FetchVariable(config::graphics::use_shader_jit,

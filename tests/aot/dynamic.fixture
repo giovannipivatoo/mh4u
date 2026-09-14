@@ -1,0 +1,18 @@
+mh4u-aot-fixture-v1
+mode arm
+base 0x1000
+pc 0x1000
+cpsr 0x10
+fpscr 0
+fpexc 0x40000000
+ticks 100
+memory_size 0x2000
+reg 0 0
+reg 1 0
+ext 0 0xdeadbeef
+ext 63 0x01234567
+word 0xe0904001
+word 0xe0b05001
+word 0xe0506001
+word 0xe0d07001
+word 0xef00002a

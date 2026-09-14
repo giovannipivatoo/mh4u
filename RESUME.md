@@ -1,5 +1,51 @@
 # Ripresa del progetto MH4U
 
+## Implementazione AOT + Metal in corso — 2026-09-15
+
+Branch locale/remoto `feat/apple-silicon-aot-metal`; lavoro utente autorizzato,
+implementazione delegata a Sol, revisione read-only Astra. Stato e comandi in
+`docs/aot-metal.md`. Le nuove opzioni CMake costruiscono moduli sperimentali:
+il runtime giocabile e l'app installata restano JIT/Vulkan.
+
+- Sol `sol_port_first_step` possiede `src/aot`, `tools/aot`, `tests/aot`,
+  `cmake/Aot.cmake` e CMakeLists.txt. Generazione persistente Dynarmic IR→C++→runner
+  senza Dynarmic, differenziali ARM/Thumb e matrici registri/shift. Catena reale
+  di 62 blocchi fino alla prima SVC a PC 0x107328: 477324 tick, confronto JIT
+  uguale per registri, memoria e timing. Mapping e callback SVC sintetici:
+  non è boot del kernel. Adapter ARM_Interface implementato nel core separato
+  `.local/aot-core-source`/`-build`, con fault fatali e nessun fallback JIT.
+  Smoke reale fresco PASS per arresto atteso: verifica identità istruzioni,
+  prima SVC HLE, poi MissingBlock 0x00107328; zero frame e nessun timeout.
+  Patch riproducibile `experimental-aot-core-adapter.patch`, helper build/smoke
+  in tools/aot. Prossimo slice: generazione oltre frontiera SVC e nuovo differenziale.
+- Sol `sol_metal_renderer` possiede `src/pica_metal`, `tools/pica_metal`,
+  `tests/pica_metal`, `cmake/PicaMetal.cmake` e la patch
+  `patches/experimental-pica-metal-batch-trace.patch`. Due test GPU passati:
+  draw multipli con depth, texture/TEV, quantizzazione D16 e adattatore PICA reale.
+  Il riferimento TEV è il renderer accelerato pinned, non parità hardware provata.
+- Core trace separato in `.local/pica-metal-trace-source` e relativo `-build`,
+  keyblob OFF e header escluso assente. Smoke finito 600 frame su stato NUOVO,
+  otto batch reali catturati. Implementati D24S8/stencil, scissor e blend copy
+  osservati: replay v1 3/8 renderizzati, altri 5 richiedono texture catturate.
+  I batch iniziali sono neri: non provano schermate visibili né gameplay.
+  Trace v2/v3 aggiunge texture limitate e flush della cache GPU prima della copia;
+  v3 verificato: flush sincrono corretto, 8/8 batch accettati ma neri/quasi neri.
+  Replay isolato usa clear sintetici: nessuna equivalenza con il frame originale.
+  Finestra 64–71 rifiutata per ETC1A4/proctex. Target persistente implementato:
+  create/import colore, draw con LoadActionLoad, readback; test submission separate
+  mantiene depth. Import/export depth/stencil e adapter guest-address/core mancanti.
+  Ultimo retest root dedicato AOT/Metal: 11/11 PASS.
+  Provenienza e dati privati in `.local/pica-metal-trace/`; texture non catturate
+  nella versione iniziale del trace. Nessun salvataggio canonico usato.
+
+Root possiede documentazione e build `.local/aot-metal-candidate`; build riferimento
+`.local/aot-metal-baseline` passa 19/19 test e smoke300 con298frame non neri.
+Build combinata aggiornata: 30/30 CTest passati, inclusi nove AOT e due PICA Metal.
+Le nuove prove non attestano ancora MH4U eseguibile con AOT e Metal diretto.
+Preservare il lavoro nel branch: non è ancora un port completo né un aggiornamento
+dell'app installata. Prima di riprendere verificare agenti/processi e gli ultimi
+risultati, perché questa nota fotografa un'implementazione ancora attiva.
+
 ## Direzione port approvata — 2026-09-14
 
 L'utente ha scelto AOT prima dell'avvio e renderer PICA→Metal, riusando inizialmente
