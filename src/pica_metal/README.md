@@ -36,8 +36,24 @@ explicit. Depth/stencil snapshot import is not implemented yet.
 Submission failure poisons the target; callers must discard it instead of using
 possibly partial color/depth contents.
 
-This is not yet a core renderer or a game-rendering result. The next integration
-step is a small `RasterizerInterface` adapter mapping guest color/depth physical
-addresses, formats and dimensions to these targets, with explicit memory
-flush/invalidate and display-transfer handling. Vertex shader execution remains
-in the PICA core until a separate PICA shader-ISA translation path is implemented.
+`CoreRasterizer` is the first experimental Azahar integration seam. It receives
+the CPU PICA vertex stage's `AddTriangle` output, keys one persistent target by
+guest color/depth address, format and dimensions, and marks the union of its guest
+pages rasterizer-cached. Color readback is encoded into the tiled guest RGBA8
+surface before the existing software framebuffer presenter or CPU transfer reads
+it. CPU invalidation flushes dirty color before discarding the target, including
+when the write overlaps only its depth interval.
+
+This core seam deliberately supports one non-aliased RGBA8 target and bounded
+tiled RGBA8 texture0. Its first depth/stencil contents must be a uniform guest
+snapshot. It rejects every depth or stencil write before Metal submission because
+depth/stencil export to guest RAM is not implemented; this prevents the CPU
+blitter or memory reads from observing stale values. Fatal state is sticky. The
+candidate integration logs `metal_draws`, Metal `submissions`, and its stop reason,
+then terminates the libretro run instead of falling back to software rasterization.
+
+This is not a game-rendering result yet. A usable core renderer still needs
+depth/stencil snapshot import and export, more target formats and aliases, coherent
+multi-target lifetime, the real transfer/fill paths, more texture formats and
+procedural texturing. Vertex shader execution remains in the PICA core until a
+separate PICA shader-ISA translation path is implemented.

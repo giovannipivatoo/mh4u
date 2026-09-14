@@ -7,6 +7,18 @@ implementazione delegata a Sol, revisione read-only Astra. Stato e comandi in
 `docs/aot-metal.md`. Le nuove opzioni CMake costruiscono moduli sperimentali:
 il runtime giocabile e l'app installata restano JIT/Vulkan.
 
+Checkpoint sorgenti `32d95a8` pubblicato nel branch. Lavoro successivo ancora in
+corso: generazione oltre SVC, exclusive32/FPSCR/sign-extension/BIC con confronti
+dedicati, e adapter CoreRasterizer Metal compilabile. Core Metal isolato in
+`.local/pica-metal-core-source`/`-build`, patch sperimentale esplicita. Il primo
+crash era un layout RendererSoftware diverso fra translation unit: membro
+condizionale prima di ScreenInfo, macro assente in citra_libretro_common. Layout
+ora invariante. Repro env Metal OFF: 300 frame PASS. Metal ON: arresto esplicito
+al primo DrawTriangles per scritture depth/stencil non esportabili; 0 draw Metal,
+nessuna prova di game frame nativo. Prossimo slice: import/export depth/stencil.
+Root build combinata aggiornata e 36/36 CTest PASS. Non scambiare questi progressi
+in corso per il contenuto già verificato del checkpoint pubblicato.
+
 - Sol `sol_port_first_step` possiede `src/aot`, `tools/aot`, `tests/aot`,
   `cmake/Aot.cmake` e CMakeLists.txt. Generazione persistente Dynarmic IR→C++→runner
   senza Dynarmic, differenziali ARM/Thumb e matrici registri/shift. Catena reale

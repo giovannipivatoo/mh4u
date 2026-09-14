@@ -1,0 +1,264 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -151,6 +151,15 @@
+ option(ENABLE_DEVELOPER_OPTIONS "Enable functionality targeted at emulator developers" OFF)
+ 
+ option(ENABLE_BUILTIN_KEYBLOB "Enable the inclusion of the default crypto keys blob" ON)
++option(ENABLE_MH4U_PICA_METAL "Use the experimental MH4U PICA Metal rasterizer" OFF)
++set(MH4U_PICA_METAL_ROOT "" CACHE PATH "MH4U runtime source root")
++if(ENABLE_MH4U_PICA_METAL)
++    if(NOT APPLE OR NOT ENABLE_SOFTWARE_RENDERER OR
++       NOT EXISTS "${MH4U_PICA_METAL_ROOT}/src/pica_metal/core_rasterizer.cpp")
++        message(FATAL_ERROR
++            "ENABLE_MH4U_PICA_METAL requires Apple, ENABLE_SOFTWARE_RENDERER, and MH4U_PICA_METAL_ROOT")
++    endif()
++endif()
+ 
+ # Compile options
+ CMAKE_DEPENDENT_OPTION(COMPILE_WITH_DWARF "Add DWARF debugging information" ${IS_DEBUG_BUILD} "MINGW" OFF)
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -550,6 +550,10 @@
+     target_link_libraries(citra_core PRIVATE dynarmic)
+ endif()
+ 
++if (ENABLE_MH4U_PICA_METAL)
++    target_compile_definitions(citra_core PRIVATE ENABLE_MH4U_PICA_METAL)
++endif()
++
+ if (CITRA_USE_PRECOMPILED_HEADERS)
+     target_precompile_headers(citra_core PRIVATE precompiled_headers.h)
+ endif()
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -4,6 +4,10 @@
+ 
+ #include <stdexcept>
+ #include <utility>
++#ifdef ENABLE_MH4U_PICA_METAL
++#include <cstdlib>
++#include <cstring>
++#endif
+ #include <boost/serialization/array.hpp>
+ #include "audio_core/dsp_interface.h"
+ #include "audio_core/hle/hle.h"
+@@ -82,6 +86,12 @@
+ System::~System() = default;
+ 
+ System::ResultStatus System::RunLoop(bool tight_loop) {
++#ifdef ENABLE_MH4U_PICA_METAL
++    const char* pica_metal = std::getenv("MH4U_PICA_METAL_CORE");
++    if (pica_metal && std::strcmp(pica_metal, "1") == 0 &&
++        status == ResultStatus::ErrorCoreExceptionRaised)
++        return status;
++#endif
+     status = ResultStatus::Success;
+ 
+     if (!IsPoweredOn()) {
+diff --git a/src/video_core/CMakeLists.txt b/src/video_core/CMakeLists.txt
+--- a/src/video_core/CMakeLists.txt
++++ b/src/video_core/CMakeLists.txt
+@@ -120,6 +120,20 @@
+         renderer_software/sw_texturing.h
+     )
+ endif()
++if (ENABLE_MH4U_PICA_METAL)
++    set(MH4U_PICA_METAL_SOURCES
++        "${MH4U_PICA_METAL_ROOT}/src/pica_metal/pica_metal.cpp"
++        "${MH4U_PICA_METAL_ROOT}/src/pica_metal/pica_metal.mm"
++        "${MH4U_PICA_METAL_ROOT}/src/pica_metal/azahar_adapter.cpp"
++        "${MH4U_PICA_METAL_ROOT}/src/pica_metal/core_rasterizer.cpp")
++    target_sources(video_core PRIVATE ${MH4U_PICA_METAL_SOURCES})
++    target_include_directories(video_core PRIVATE "${MH4U_PICA_METAL_ROOT}/src")
++    target_compile_definitions(video_core PRIVATE ENABLE_MH4U_PICA_METAL)
++    set_source_files_properties(
++        "${MH4U_PICA_METAL_ROOT}/src/pica_metal/pica_metal.mm"
++        PROPERTIES COMPILE_OPTIONS "-fobjc-arc" SKIP_PRECOMPILE_HEADERS ON)
++    target_link_libraries(video_core PRIVATE "-framework Foundation" "-framework Metal")
++endif()
+ if (ENABLE_OPENGL)
+     target_sources(video_core PRIVATE
+         renderer_opengl/frame_dumper_opengl.cpp
+diff --git a/src/video_core/renderer_software/renderer_software.h b/src/video_core/renderer_software/renderer_software.h
+--- a/src/video_core/renderer_software/renderer_software.h
++++ b/src/video_core/renderer_software/renderer_software.h
+@@ -5,10 +5,16 @@
+ #pragma once
+ 
+ #include "video_core/renderer_base.h"
+-#include "video_core/renderer_software/sw_rasterizer.h"
++#include <memory>
+ 
+ namespace Core {
+ class System;
++}
++namespace Memory {
++class MemorySystem;
++}
++namespace mh4u::pica_metal {
++class CoreRasterizer;
+ }
+ 
+ namespace SwRenderer {
+@@ -26,7 +32,7 @@
+     ~RendererSoftware() override;
+ 
+     [[nodiscard]] VideoCore::RasterizerInterface* Rasterizer() override {
+-        return &rasterizer;
++        return rasterizer.get();
+     }
+ 
+     [[nodiscard]] const ScreenInfo& Screen(VideoCore::ScreenId id) const noexcept {
+@@ -43,7 +49,8 @@
+ private:
+     Memory::MemorySystem& memory;
+     Pica::PicaCore& pica;
+-    RasterizerSoftware rasterizer;
++    std::unique_ptr<VideoCore::RasterizerInterface> rasterizer;
++    mh4u::pica_metal::CoreRasterizer* metal_rasterizer{};
+     std::array<ScreenInfo, 3> screen_infos{};
+ };
+ 
+diff --git a/src/video_core/renderer_software/renderer_software.cpp b/src/video_core/renderer_software/renderer_software.cpp
+--- a/src/video_core/renderer_software/renderer_software.cpp
++++ b/src/video_core/renderer_software/renderer_software.cpp
+@@ -7,18 +7,45 @@
+ #include "video_core/gpu.h"
+ #include "video_core/pica/pica_core.h"
+ #include "video_core/renderer_software/renderer_software.h"
++#include "video_core/renderer_software/sw_rasterizer.h"
++#include <algorithm>
++#include <limits>
++#ifdef ENABLE_MH4U_PICA_METAL
++#include "pica_metal/core_rasterizer.h"
++#include <cstdlib>
++#include <cstring>
++#endif
+ 
+ namespace SwRenderer {
+ 
+ RendererSoftware::RendererSoftware(Core::System& system, Pica::PicaCore& pica_,
+                                    Frontend::EmuWindow& window)
+-    : VideoCore::RendererBase{system, window, nullptr}, memory{system.Memory()}, pica{pica_},
+-      rasterizer{memory, pica} {}
++    : VideoCore::RendererBase{system, window, nullptr}, memory{system.Memory()}, pica{pica_} {
++#ifdef ENABLE_MH4U_PICA_METAL
++    const char* enabled = std::getenv("MH4U_PICA_METAL_CORE");
++    if (enabled && std::strcmp(enabled, "1") == 0) {
++        auto metal = std::make_unique<mh4u::pica_metal::CoreRasterizer>(memory, pica);
++        metal_rasterizer = metal.get();
++        rasterizer = std::move(metal);
++        return;
++    }
++#endif
++    rasterizer = std::make_unique<RasterizerSoftware>(memory, pica);
++}
+ 
+ RendererSoftware::~RendererSoftware() = default;
+ 
+ void RendererSoftware::SwapBuffers() {
+     system.perf_stats->StartSwap();
++#ifdef ENABLE_MH4U_PICA_METAL
++    if (metal_rasterizer && !metal_rasterizer->FlushColorForPresentation()) {
++        system.SetStatus(Core::System::ResultStatus::ErrorCoreExceptionRaised,
++                         metal_rasterizer->error().c_str());
++        system.perf_stats->EndSwap();
++        EndFrame();
++        return;
++    }
++#endif
+     PrepareRenderTarget();
+     system.perf_stats->EndSwap();
+     EndFrame();
+@@ -42,21 +69,43 @@
+     const PAddr framebuffer_addr =
+         framebuffer.active_fb == 0 ? framebuffer.address_left1 : framebuffer.address_left2;
+     const s32 bpp = Pica::BytesPerPixel(framebuffer.color_format);
+-    const u8* framebuffer_data = memory.GetPhysicalPointer(framebuffer_addr);
+-
++    if (bpp <= 0 || framebuffer.stride % bpp) {
++        LOG_ERROR(Render, "Software presenter rejected invalid framebuffer stride");
++        info = {};
++        return;
++    }
+     const s32 pixel_stride = framebuffer.stride / bpp;
++    const u64 pixel_count = static_cast<u64>(pixel_stride) * framebuffer.height;
++    if (pixel_stride <= 0 || !framebuffer.height ||
++        pixel_count > std::numeric_limits<size_t>::max() / 4) {
++        LOG_ERROR(Render, "Software presenter rejected invalid framebuffer dimensions");
++        info = {};
++        return;
++    }
+     info.height = framebuffer.height;
+     info.width = pixel_stride;
+-    info.pixels.resize(info.width * info.height * 4);
++    info.pixels.resize(static_cast<size_t>(pixel_count) * 4);
++    const u64 framebuffer_size = static_cast<u64>(framebuffer.stride) * framebuffer.height;
++    auto framebuffer_ref = memory.GetPhysicalRef(framebuffer_addr);
++    if (!color_fill.is_enabled &&
++        (!framebuffer_ref || framebuffer_ref.GetSize() < framebuffer_size)) {
++        LOG_ERROR(Render, "Software presenter framebuffer is outside guest physical memory");
++        std::fill(info.pixels.begin(), info.pixels.end(), 0);
++        return;
++    }
++    const u8* framebuffer_data = color_fill.is_enabled
++                                     ? nullptr
++                                     : framebuffer_ref.GetReadBytes<u8>(framebuffer_size).data();
+ 
+     for (u32 y = 0; y < info.height; y++) {
+         for (u32 x = 0; x < info.width; x++) {
+-            const u8* pixel = framebuffer_data + (y * pixel_stride + pixel_stride - x) * bpp;
+             Common::Vec4 color = [&] {
+                 if (color_fill.is_enabled) {
+                     return Common::Vec4<u8>(color_fill.color_r, color_fill.color_g,
+                                             color_fill.color_b, 255);
+                 }
++                const u8* pixel = framebuffer_data +
++                                  (y * pixel_stride + pixel_stride - 1 - x) * bpp;
+ 
+                 switch (framebuffer.color_format) {
+                 case Pica::PixelFormat::RGBA8:
+diff --git a/src/citra_libretro/CMakeLists.txt b/src/citra_libretro/CMakeLists.txt
+--- a/src/citra_libretro/CMakeLists.txt
++++ b/src/citra_libretro/CMakeLists.txt
+@@ -64,6 +64,9 @@
+ 
+ set_target_properties(citra_libretro PROPERTIES PREFIX "")
+ target_compile_definitions(citra_libretro PRIVATE HAVE_LIBRETRO)
++if(ENABLE_MH4U_PICA_METAL)
++  target_compile_definitions(citra_libretro PRIVATE ENABLE_MH4U_PICA_METAL)
++endif()
+ 
+ if(ANDROID)
+   target_compile_definitions(citra_common PRIVATE HAVE_LIBRETRO_VFS)
+diff --git a/src/citra_libretro/citra_libretro.cpp b/src/citra_libretro/citra_libretro.cpp
+--- a/src/citra_libretro/citra_libretro.cpp
++++ b/src/citra_libretro/citra_libretro.cpp
+@@ -5,6 +5,10 @@
+ #include <list>
+ #include <numeric>
+ #include <vector>
++#ifdef ENABLE_MH4U_PICA_METAL
++#include <cstdlib>
++#include <cstring>
++#endif
+ #include <math.h>
+ #include <stdint.h>
+ #include <stdio.h>
+@@ -311,6 +315,13 @@
+             }
+ 
+             LibRetro::DisplayMessage(msg.c_str());
++#ifdef ENABLE_MH4U_PICA_METAL
++            const char* pica_metal = std::getenv("MH4U_PICA_METAL_CORE");
++            if (pica_metal && std::strcmp(pica_metal, "1") == 0) {
++                LibRetro::Shutdown();
++                return;
++            }
++#endif
+         }
+     }
+ }

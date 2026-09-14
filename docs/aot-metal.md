@@ -6,7 +6,8 @@ allow those services to be replaced later. See [architecture.md](architecture.md
 
 The new modules are experimental. Enabling their build options builds separate
 tools and tests; it does not switch `mh4u-runtime` or the installed app to AOT or
-direct Metal. The ordinary runtime still uses Dynarmic JIT and Vulkan/MoltenVK.
+direct Metal. Separate opt-in core patches exercise the adapters in the real
+runtime. The ordinary runtime still uses Dynarmic JIT and Vulkan/MoltenVK.
 
 ## Build and check
 
@@ -90,8 +91,22 @@ an original initial state are needed before comparing a complete draw sequence.
 The Metal API now exposes persistent targets: create with an explicit clear or
 RGBA8 import, submit draws preserving color/depth/stencil, then read back color.
 Tests cover separate submissions retaining depth. Import still initializes depth
-and stencil from explicit clears; importing/exporting their original guest state
-and connecting guest-addressed targets to the core remain unfinished.
+and stencil from explicit clears; importing/exporting arbitrary original guest
+depth/stencil state remains unfinished.
+
+The experimental core adapter now maps a guest color/depth pair to a persistent
+target, tracks cached guest pages and writes color back in PICA tiled format.
+It reuses the software RAM presentation path, with CPU PICA vertex processing;
+there is no Vulkan rasterization fallback when Metal is selected. The first real
+draw currently requests depth/stencil writes, which are rejected because guest
+depth/stencil export is unfinished. The live run reaches that draw but submits
+zero Metal draws. It is not a Metal-rendered game-frame result.
+
+A candidate crash was isolated to inconsistent `RendererSoftware` layout across
+translation units. A conditional member moved `ScreenInfo` in one compilation
+unit while the libretro window read the old offset. The layout is now invariant.
+The same candidate with Metal disabled completes 300 frames; Metal enabled stops
+explicitly at the unsupported depth/stencil write, without the previous crash.
 
 The next integration gates are:
 

@@ -15,6 +15,16 @@ target_link_libraries(mh4u-pica-metal-azahar-adapter PUBLIC mh4u-pica-metal)
 target_compile_options(mh4u-pica-metal-azahar-adapter PRIVATE
   -Wall -Wextra -Wno-unused-parameter)
 
+add_library(mh4u-pica-metal-core-adapter STATIC
+  "${CMAKE_SOURCE_DIR}/src/pica_metal/core_rasterizer.cpp")
+target_include_directories(mh4u-pica-metal-core-adapter PRIVATE
+  "${AZAHAR_SOURCE}/src" "${AZAHAR_SOURCE}/externals/fmt/include"
+  "${AZAHAR_SOURCE}/externals/boost")
+target_link_libraries(mh4u-pica-metal-core-adapter PUBLIC
+  mh4u-pica-metal-azahar-adapter)
+target_compile_options(mh4u-pica-metal-core-adapter PRIVATE
+  -Wall -Wextra -Wno-unused-parameter)
+
 add_executable(pica-metal-probe "${CMAKE_SOURCE_DIR}/tools/pica_metal/probe.cpp")
 target_link_libraries(pica-metal-probe PRIVATE mh4u-pica-metal)
 target_compile_options(pica-metal-probe PRIVATE -Wall -Wextra -Werror)
