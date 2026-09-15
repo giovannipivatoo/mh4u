@@ -2,6 +2,17 @@
 
 ## Implementazione AOT + Metal in corso — 2026-09-15
 
+Core unico AOT+Metal implementato e verificato: helper tools/aot/build_combined_core.py,
+patch experimental-aot-metal-core-adapter.patch, artifact iter08 già verificato.
+Build .local/aot-metal-combined-core-build; smoke .local/aot-metal-combined-smoke.
+Entrambi backend selezionati realmente, identity true, exit 1 controllato a PC104614,
+zero frame/no timeout. Dylib SHA 277964a6e2fef6b984fc5b7d1f41d439210ee07dee7ffdeb413a9b795e609ad9.
+Questo non dimostra rendering con AOT. Metal post-input: timeout 450/1500; sample
+mostra progresso 427 frame/14475 draw, costo campionato 61% decode texture e 17% waitGPU.
+Sol Metal implementa cachetexture singola bounded con confronto esatto bytes guest.
+Copertura AOT: BFS può espellere blocchi; futura priorità ai descriptor realmente
+eseguiti, non semplice crescita numero entry. Salvataggi/app privati invariati.
+
 Ultimo checkpoint verificato: suite completa 41/41 PASS. Metal diretto completa 300
 video frame con 8167 submission e 245 frame non neri; cattura 'Formatting complete.'
 leggibile e orientata correttamente, confrontata con Vulkan. Proctex osservata

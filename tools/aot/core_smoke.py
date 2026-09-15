@@ -2,8 +2,10 @@
 """Run the experimental AOT core with a fresh local profile and a wall-clock bound."""
 
 import argparse
+import hashlib
 import json
 import math
+import os
 import pathlib
 import re
 import subprocess
@@ -18,6 +20,7 @@ def main() -> int:
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--frames", type=int, default=300)
     parser.add_argument("--timeout", type=float, default=20)
+    parser.add_argument("--require-aot-metal", action="store_true")
     args = parser.parse_args()
     if args.frames <= 0 or not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error("--frames must be positive and --timeout must be positive and finite")
@@ -32,10 +35,17 @@ def main() -> int:
     command = [args.host, "--core", args.core, "--game", args.game, "--headless",
                "--renderer", "software", "--frames", str(args.frames),
                "--state-dir", str(state), "--no-audio"]
+    environment = os.environ.copy()
+    if args.require_aot_metal:
+        environment["MH4U_PICA_METAL_CORE"] = "1"
+    core_path = pathlib.Path(args.core).resolve()
+    if not core_path.is_file():
+        parser.error("--core must be an existing file")
+    core_sha256 = hashlib.sha256(core_path.read_bytes()).hexdigest()
     timed_out = False
     try:
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, timeout=args.timeout)
+                                stderr=subprocess.PIPE, timeout=args.timeout, env=environment)
         returncode = result.returncode
         stdout = result.stdout
         stderr = result.stderr
@@ -66,12 +76,18 @@ def main() -> int:
     runs = re.findall(r"AOT run=(\d+) blocks=(\d+) exit=(\d+) pc=([0-9a-fA-F]+)", stderr)
     expected_failure = failure is not None and int(failure.group(1)) == 6
     identity_verified = "AOT identity verified:" in stderr
+    aot_backend_active = "Experimental ARM_Aot active:" in stderr
+    pica_metal_backend_active = "Experimental PICA Metal rasterizer active:" in stderr
     report = {
         "schema_version": 1,
         "scope": "experimental AOT core fail-closed smoke, not gameplay",
         "timed_out": timed_out,
         "returncode": returncode,
         "requested_frames": args.frames,
+        "command": command,
+        "environment": ({"MH4U_PICA_METAL_CORE": environment["MH4U_PICA_METAL_CORE"]}
+                        if "MH4U_PICA_METAL_CORE" in environment else {}),
+        "core_sha256": core_sha256,
         "outcome": "expected-missing-block" if expected_failure else "unexpected",
         "aot_failure_reported": failure is not None,
         "aot_exit": int(failure.group(1)) if failure else None,
@@ -83,6 +99,9 @@ def main() -> int:
         "aot_block_callbacks": int(runs[-1][1]) if runs else 0,
         "first_run_exit": int(runs[0][2]) if runs else None,
         "identity_verified": identity_verified,
+        "aot_backend_active": aot_backend_active,
+        "pica_metal_requested": args.require_aot_metal,
+        "pica_metal_backend_active": pica_metal_backend_active,
         "host_cpu_option": metrics.get("cpu"),
         "actual_cpu_evidence": "AOT telemetry and identity verification",
         "frame_limit_reached": metrics.get("frame_limit_reached"),
@@ -94,10 +113,12 @@ def main() -> int:
     (state.parent / "aot-core-smoke.stdout.log").write_text(stdout)
     (state.parent / "aot-core-smoke.stderr.log").write_text(stderr)
     print(json.dumps(report, indent=2))
-    passed = (not timed_out and returncode not in (None, 0) and expected_failure and
+    passed = (not timed_out and returncode == 1 and expected_failure and
               identity_verified and report["first_run_exit"] == 2 and
               report["aot_cpsr"] is not None and report["aot_fpscr"] is not None and
               report["frame_limit_reached"] is False and report["video_frames"] == 0)
+    if args.require_aot_metal:
+        passed = passed and aot_backend_active and pica_metal_backend_active
     return 0 if passed else 1
 
 

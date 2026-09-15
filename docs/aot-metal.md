@@ -199,12 +199,12 @@ checks. Detailed batch manifests remain local.
 
 ## Combined-core integration contract
 
-A combined candidate must enable both experimental adapters in a fresh local
+The combined candidate enables both experimental adapters in a fresh local
 source export, with the built-in key blob, Vulkan and OpenGL disabled. The AOT
-factory must select `ARM_Aot` for every guest CPU. Metal uses the RAM presenter
+factory selects `ARM_Aot` for every guest CPU. Metal uses the RAM presenter
 selected by `--renderer software`, but requires `MH4U_PICA_METAL_CORE=1` to select
 the actual `CoreRasterizer`; a build flag alone does not prove that selection.
-The combined launcher must verify both backend selections from runtime evidence.
+The combined smoke verifies both backend selections from runtime evidence.
 
 Both patches modify the core error loop and libretro shutdown path. Their merged
 form must preserve a single sticky fatal status, then shut down and return instead
@@ -215,3 +215,28 @@ path so Metal guest-memory coherence also applies.
 A combined build and fresh-state missing-block smoke can check linking, backend
 selection and bounded shutdown now. Since AOT still stops before video, such a
 result cannot demonstrate CPU/GPU cooperation on rendered game frames.
+
+Build the verified combined checkpoint using the local iteration08 artifact:
+
+```sh
+python3 tools/aot/build_combined_core.py --jobs 8
+python3 tools/aot/core_smoke.py --require-aot-metal \
+  --host build/mh4u-runtime \
+  --core .local/aot-metal-combined-core-build/bin/Release/azahar_libretro.dylib \
+  --game .local/game/main.cxi \
+  --state-dir .local/aot-metal-check/state --frames 300 --timeout 20
+```
+
+The helper requires fresh source/build paths and pins the verified artifact and
+manifest hashes. The actual combined build and fresh smoke pass: both backend
+banners and instruction identity are verified, the core returns exactly 1 on
+missing PC `0x00104614`, and no timeout or video frames occur. Core SHA-256 is
+`277964a6e2fef6b984fc5b7d1f41d439210ee07dee7ffdeb413a9b795e609ad9`;
+build provenance and smoke agree. This establishes the combined path, not a
+completed AOT boot or a game frame rendered with AOT execution.
+
+Further Metal input validation reached 427 frames in a sampled finite run; the
+450/1,500-frame attempts timed out. Sampling at that point attributed about 61%
+of main-thread samples to repeated texture decoding and 17% to draw-completion
+waits. These are sampled costs in that run, not whole-game performance measurements.
+The next optimization is bounded texture reuse with exact guest-byte validation.
