@@ -18,73 +18,6 @@ index 2a6dcb9..83d7ea1 100644
  
  # Compile options
  CMAKE_DEPENDENT_OPTION(COMPILE_WITH_DWARF "Add DWARF debugging information" ${IS_DEBUG_BUILD} "MINGW" OFF)
-diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
-index 00a3ac6..ed9a4fe 100644
---- a/src/core/CMakeLists.txt
-+++ b/src/core/CMakeLists.txt
-@@ -550,6 +550,17 @@ if ("x86_64" IN_LIST ARCHITECTURE OR "arm64" IN_LIST ARCHITECTURE)
-     target_link_libraries(citra_core PRIVATE dynarmic)
- endif()
- 
-+if(ENABLE_MH4U_AOT)
-+    target_sources(citra_core PRIVATE
-+        arm/aot/arm_aot.cpp
-+        arm/aot/arm_aot.h
-+        "${MH4U_AOT_RUNTIME_ROOT}/src/aot/runtime.cpp"
-+        "${MH4U_AOT_ARTIFACT}"
-+    )
-+    target_include_directories(citra_core PRIVATE "${MH4U_AOT_RUNTIME_ROOT}/src")
-+    target_compile_definitions(citra_core PRIVATE ENABLE_MH4U_AOT)
-+endif()
-+
- if (CITRA_USE_PRECOMPILED_HEADERS)
-     target_precompile_headers(citra_core PRIVATE precompiled_headers.h)
- endif()
-diff --git a/src/core/core.cpp b/src/core/core.cpp
-index af0a716..764a495 100644
---- a/src/core/core.cpp
-+++ b/src/core/core.cpp
-@@ -14,6 +14,9 @@
- #include "common/settings.h"
- #include "core/arm/arm_interface.h"
- #include "core/arm/exclusive_monitor.h"
-+#ifdef ENABLE_MH4U_AOT
-+#include "core/arm/aot/arm_aot.h"
-+#endif
- #include "core/hle/service/cam/cam.h"
- #include "core/hle/service/hid/hid.h"
- #include "core/hle/service/ir/ir_user.h"
-@@ -82,6 +85,9 @@ System::System() : movie{*this}, cheat_engine{*this} {}
- System::~System() = default;
- 
- System::ResultStatus System::RunLoop(bool tight_loop) {
-+#ifdef ENABLE_MH4U_AOT
-+    if (status == ResultStatus::ErrorCoreExceptionRaised) return status;
-+#endif
-     status = ResultStatus::Success;
- 
-     if (!IsPoweredOn()) {
-@@ -544,6 +550,12 @@ System::ResultStatus System::Init(Frontend::EmuWindow& emu_window,
- 
-     exclusive_monitor = MakeExclusiveMonitor(*memory, num_cores);
-     cpu_cores.reserve(num_cores);
-+#ifdef ENABLE_MH4U_AOT
-+    for (u32 i = 0; i < num_cores; ++i) {
-+        cpu_cores.push_back(std::make_shared<ARM_Aot>(
-+            *this, *memory, i, timing->GetTimer(i), *exclusive_monitor));
-+    }
-+#else
-     if (Settings::values.use_cpu_jit) {
- #if CITRA_ARCH(x86_64) || CITRA_ARCH(arm64)
-         for (u32 i = 0; i < num_cores; ++i) {
-@@ -563,6 +575,7 @@ System::ResultStatus System::Init(Frontend::EmuWindow& emu_window,
-                 std::make_shared<ARM_DynCom>(*this, *memory, USER32MODE, i, timing->GetTimer(i)));
-         }
-     }
-+#endif
-     running_core = cpu_cores[0].get();
- 
-     kernel->SetCPUs(cpu_cores);
 diff --git a/src/citra_libretro/CMakeLists.txt b/src/citra_libretro/CMakeLists.txt
 index e28f994..d1473f4 100644
 --- a/src/citra_libretro/CMakeLists.txt
@@ -114,94 +47,34 @@ index e155731..6afb531 100644
          }
      }
  }
-diff --git a/src/core/arm/aot/arm_aot.h b/src/core/arm/aot/arm_aot.h
-new file mode 100644
-index 0000000..d08bb0c
---- /dev/null
-+++ b/src/core/arm/aot/arm_aot.h
-@@ -0,0 +1,76 @@
-+// SPDX-License-Identifier: GPL-2.0-or-later
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 00a3ac6..ed9a4fe 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -550,6 +550,17 @@ if ("x86_64" IN_LIST ARCHITECTURE OR "arm64" IN_LIST ARCHITECTURE)
+     target_link_libraries(citra_core PRIVATE dynarmic)
+ endif()
+ 
++if(ENABLE_MH4U_AOT)
++    target_sources(citra_core PRIVATE
++        arm/aot/arm_aot.cpp
++        arm/aot/arm_aot.h
++        "${MH4U_AOT_RUNTIME_ROOT}/src/aot/runtime.cpp"
++        "${MH4U_AOT_ARTIFACT}"
++    )
++    target_include_directories(citra_core PRIVATE "${MH4U_AOT_RUNTIME_ROOT}/src")
++    target_compile_definitions(citra_core PRIVATE ENABLE_MH4U_AOT)
++endif()
 +
-+#pragma once
-+
-+#include <memory>
-+
-+#include "aot/runtime.h"
-+#include "core/arm/arm_interface.h"
-+
-+namespace Memory {
-+class MemorySystem;
-+struct PageTable;
-+} // namespace Memory
-+
-+namespace Core {
-+
-+class ExclusiveMonitor;
-+class System;
-+
-+class ARM_Aot final : public ARM_Interface {
-+public:
-+    ARM_Aot(System& system, Memory::MemorySystem& memory, u32 core_id,
-+            std::shared_ptr<Timing::Timer> timer, ExclusiveMonitor& exclusive_monitor);
-+    ~ARM_Aot() override;
-+
-+    void Run() override;
-+    void Step() override;
-+    void ClearInstructionCache() override;
-+    void InvalidateCacheRange(u32 start_address, std::size_t length) override;
-+    void ClearExclusiveState() override;
-+    void SetPageTable(const std::shared_ptr<Memory::PageTable>& page_table) override;
-+    void SetPC(u32 addr) override;
-+    u32 GetPC() const override;
-+    u32 GetReg(int index) const override;
-+    void SetReg(int index, u32 value) override;
-+    u32 GetVFPReg(int index) const override;
-+    void SetVFPReg(int index, u32 value) override;
-+    u32 GetVFPSystemReg(VFPSystemRegister reg) const override;
-+    void SetVFPSystemReg(VFPSystemRegister reg, u32 value) override;
-+    u32 GetCPSR() const override;
-+    void SetCPSR(u32 cpsr) override;
-+    u32 GetCP15Register(CP15Register reg) const override;
-+    void SetCP15Register(CP15Register reg, u32 value) override;
-+    void SaveContext(ThreadContext& ctx) override;
-+    void LoadContext(const ThreadContext& ctx) override;
-+    void PrepareReschedule() override;
-+    bool HasSingleInstructionBreakAccuracy() override;
-+
-+protected:
-+    std::shared_ptr<Memory::PageTable> GetPageTable() const override;
-+
-+private:
-+    class Callbacks;
-+    void Fail(const char* reason, const mh4u::aot::BlockResult* result = nullptr);
-+    bool VerifyArtifactIdentity();
-+    bool OverlapsCompiledCode(u32 address, unsigned bits) const;
-+
-+    System& system;
-+    Memory::MemorySystem& memory;
-+    ExclusiveMonitor& exclusive_monitor;
-+    std::unique_ptr<Callbacks> callbacks;
-+    mh4u::aot::GuestCpuState state{};
-+    u32 cp15_thread_uprw{};
-+    u32 cp15_thread_uro{};
-+    std::shared_ptr<Memory::PageTable> current_page_table;
-+    bool executing{};
-+    bool has_run{};
-+    bool identity_verified{};
-+    bool reschedule_requested{};
-+    bool local_exclusive_valid{};
-+    u32 local_exclusive_address{};
-+    u64 run_count{};
-+    u64 block_count{};
-+};
-+
-+} // namespace Core
+ if (CITRA_USE_PRECOMPILED_HEADERS)
+     target_precompile_headers(citra_core PRIVATE precompiled_headers.h)
+ endif()
 diff --git a/src/core/arm/aot/arm_aot.cpp b/src/core/arm/aot/arm_aot.cpp
 new file mode 100644
-index 0000000..7a7b22a
+index 0000000..9d98487
 --- /dev/null
 +++ b/src/core/arm/aot/arm_aot.cpp
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,355 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
 +#include "core/arm/aot/arm_aot.h"
@@ -283,12 +156,15 @@ index 0000000..7a7b22a
 +    static bool AddTicks(void* context, u64 elapsed, u64* remaining) {
 +        auto& self = *static_cast<Callbacks*>(context);
 +        if (!remaining || elapsed > static_cast<u64>(std::numeric_limits<s64>::max())) return false;
-+        if (elapsed == 0) ++self.parent.block_count;
 +        self.parent.GetTimer().AddTicks(elapsed);
 +        const s64 downcount = self.parent.GetTimer().GetDowncount();
 +        *remaining = downcount > 0 && !self.parent.reschedule_requested
 +                         ? static_cast<u64>(downcount)
 +                         : 0;
++        if (elapsed == 0 && *remaining > 0) {
++            ++self.parent.block_count;
++            if (!self.parent.RecordHotDescriptor()) return false;
++        }
 +        return true;
 +    }
 +
@@ -358,7 +234,9 @@ index 0000000..7a7b22a
 +      exclusive_monitor(exclusive_monitor_), callbacks(std::make_unique<Callbacks>(*this)),
 +      current_page_table(memory.GetCurrentPageTable()) {}
 +
-+ARM_Aot::~ARM_Aot() = default;
++ARM_Aot::~ARM_Aot() {
++    DumpHotDescriptors();
++}
 +
 +void ARM_Aot::Run() {
 +    if (break_flag) return;
@@ -511,6 +389,33 @@ index 0000000..7a7b22a
 +    return false;
 +}
 +
++bool ARM_Aot::RecordHotDescriptor() {
++    constexpr std::size_t max_hot_descriptors = 1024;
++    const auto descriptor = std::tuple{state.regs[15], state.cpsr & 0x0600fe20U,
++                                       state.fpscr & 0x07f70000U};
++    if (hot_descriptors.find(descriptor) != hot_descriptors.end()) return true;
++    if (hot_descriptors.size() >= max_hot_descriptors) {
++        hot_descriptor_overflow = true;
++        return false;
++    }
++    hot_descriptors.insert(descriptor);
++    return true;
++}
++
++void ARM_Aot::DumpHotDescriptors() {
++    if (hot_descriptors_dumped) return;
++    hot_descriptors_dumped = true;
++    std::string entries;
++    for (const auto& [pc, cpsr, fpscr] : hot_descriptors) {
++        if (!entries.empty()) entries += ';';
++        entries += fmt::format("{:08x},{:08x},{:08x}", pc, cpsr, fpscr);
++    }
++    const auto* identity = mh4u_aot_identity();
++    LOG_INFO(Core_ARM11, "AOT hot descriptors: input_sha256={} core={} count={} overflow={} entries={}",
++             identity && identity->input_sha256 ? identity->input_sha256 : "missing", GetID(),
++             hot_descriptors.size(), hot_descriptor_overflow ? 1 : 0, entries);
++}
++
 +void ARM_Aot::Fail(const char* reason, const mh4u::aot::BlockResult* result) {
 +    std::string detail = reason;
 +    if (result) {
@@ -518,9 +423,145 @@ index 0000000..7a7b22a
 +                              static_cast<u32>(result->exit), result->next_pc, result->detail);
 +    }
 +    detail += fmt::format(" [cpsr={:08x}, fpscr={:08x}]", state.cpsr, state.fpscr);
++    DumpHotDescriptors();
 +    LOG_CRITICAL(Core_ARM11, "{}", detail);
 +    SetBreakFlag();
 +    system.SetStatus(System::ResultStatus::ErrorCoreExceptionRaised, detail.c_str());
 +}
 +
 +} // namespace Core
+diff --git a/src/core/arm/aot/arm_aot.h b/src/core/arm/aot/arm_aot.h
+new file mode 100644
+index 0000000..c21bf1f
+--- /dev/null
++++ b/src/core/arm/aot/arm_aot.h
+@@ -0,0 +1,83 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <memory>
++#include <set>
++#include <tuple>
++
++#include "aot/runtime.h"
++#include "core/arm/arm_interface.h"
++
++namespace Memory {
++class MemorySystem;
++struct PageTable;
++} // namespace Memory
++
++namespace Core {
++
++class ExclusiveMonitor;
++class System;
++
++class ARM_Aot final : public ARM_Interface {
++public:
++    ARM_Aot(System& system, Memory::MemorySystem& memory, u32 core_id,
++            std::shared_ptr<Timing::Timer> timer, ExclusiveMonitor& exclusive_monitor);
++    ~ARM_Aot() override;
++
++    void Run() override;
++    void Step() override;
++    void ClearInstructionCache() override;
++    void InvalidateCacheRange(u32 start_address, std::size_t length) override;
++    void ClearExclusiveState() override;
++    void SetPageTable(const std::shared_ptr<Memory::PageTable>& page_table) override;
++    void SetPC(u32 addr) override;
++    u32 GetPC() const override;
++    u32 GetReg(int index) const override;
++    void SetReg(int index, u32 value) override;
++    u32 GetVFPReg(int index) const override;
++    void SetVFPReg(int index, u32 value) override;
++    u32 GetVFPSystemReg(VFPSystemRegister reg) const override;
++    void SetVFPSystemReg(VFPSystemRegister reg, u32 value) override;
++    u32 GetCPSR() const override;
++    void SetCPSR(u32 cpsr) override;
++    u32 GetCP15Register(CP15Register reg) const override;
++    void SetCP15Register(CP15Register reg, u32 value) override;
++    void SaveContext(ThreadContext& ctx) override;
++    void LoadContext(const ThreadContext& ctx) override;
++    void PrepareReschedule() override;
++    bool HasSingleInstructionBreakAccuracy() override;
++
++protected:
++    std::shared_ptr<Memory::PageTable> GetPageTable() const override;
++
++private:
++    class Callbacks;
++    void Fail(const char* reason, const mh4u::aot::BlockResult* result = nullptr);
++    bool RecordHotDescriptor();
++    void DumpHotDescriptors();
++    bool VerifyArtifactIdentity();
++    bool OverlapsCompiledCode(u32 address, unsigned bits) const;
++
++    System& system;
++    Memory::MemorySystem& memory;
++    ExclusiveMonitor& exclusive_monitor;
++    std::unique_ptr<Callbacks> callbacks;
++    mh4u::aot::GuestCpuState state{};
++    u32 cp15_thread_uprw{};
++    u32 cp15_thread_uro{};
++    std::shared_ptr<Memory::PageTable> current_page_table;
++    bool executing{};
++    bool has_run{};
++    bool identity_verified{};
++    bool reschedule_requested{};
++    bool local_exclusive_valid{};
++    u32 local_exclusive_address{};
++    u64 run_count{};
++    u64 block_count{};
++    std::set<std::tuple<u32, u32, u32>> hot_descriptors;
++    bool hot_descriptor_overflow{};
++    bool hot_descriptors_dumped{};
++};
++
++} // namespace Core
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index af0a716..764a495 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -14,6 +14,9 @@
+ #include "common/settings.h"
+ #include "core/arm/arm_interface.h"
+ #include "core/arm/exclusive_monitor.h"
++#ifdef ENABLE_MH4U_AOT
++#include "core/arm/aot/arm_aot.h"
++#endif
+ #include "core/hle/service/cam/cam.h"
+ #include "core/hle/service/hid/hid.h"
+ #include "core/hle/service/ir/ir_user.h"
+@@ -82,6 +85,9 @@ System::System() : movie{*this}, cheat_engine{*this} {}
+ System::~System() = default;
+ 
+ System::ResultStatus System::RunLoop(bool tight_loop) {
++#ifdef ENABLE_MH4U_AOT
++    if (status == ResultStatus::ErrorCoreExceptionRaised) return status;
++#endif
+     status = ResultStatus::Success;
+ 
+     if (!IsPoweredOn()) {
+@@ -544,6 +550,13 @@ System::ResultStatus System::Init(Frontend::EmuWindow& emu_window,
+ 
+     exclusive_monitor = MakeExclusiveMonitor(*memory, num_cores);
+     cpu_cores.reserve(num_cores);
++#ifdef ENABLE_MH4U_AOT
++    for (u32 i = 0; i < num_cores; ++i) {
++        cpu_cores.push_back(std::make_shared<ARM_Aot>(
++            *this, *memory, i, timing->GetTimer(i), *exclusive_monitor));
++    }
++    LOG_INFO(Core, "Experimental ARM_Aot active: {} guest cores", num_cores);
++#else
+     if (Settings::values.use_cpu_jit) {
+ #if CITRA_ARCH(x86_64) || CITRA_ARCH(arm64)
+         for (u32 i = 0; i < num_cores; ++i) {
+@@ -563,6 +576,7 @@ System::ResultStatus System::Init(Frontend::EmuWindow& emu_window,
+                 std::make_shared<ARM_DynCom>(*this, *memory, USER32MODE, i, timing->GetTimer(i)));
+         }
+     }
++#endif
+     running_core = cpu_cores[0].get();
+ 
+     kernel->SetCPUs(cpu_cores);

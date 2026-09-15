@@ -44,6 +44,10 @@ def run(*args, cwd=ROOT, capture=False):
                           text=True, capture_output=capture)
 
 
+def sha256(path: pathlib.Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def apply_patch() -> None:
     command = ["patch", "--force", "--fuzz=0", "-p1", "-i", str(PATCH)]
     reverse = subprocess.run([*command, "--dry-run", "-R"], cwd=CANDIDATE_SOURCE,
@@ -64,6 +68,7 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--artifact", default=ARTIFACT, type=pathlib.Path)
     parser.add_argument("--manifest", default=MANIFEST, type=pathlib.Path)
+    parser.add_argument("--build-report", type=pathlib.Path)
     parser.add_argument("--entry-descriptor", action="append", default=[])
     args = parser.parse_args()
     if args.jobs <= 0:
@@ -71,6 +76,9 @@ def main() -> int:
     if (not below_local(args.artifact) or args.artifact.suffix != ".cpp" or
             not below_local(args.manifest) or args.manifest.suffix != ".json"):
         parser.error("--artifact and --manifest must be .cpp/.json files below .local")
+    if args.build_report and (not below_local(args.build_report) or
+                              args.build_report.suffix != ".json"):
+        parser.error("--build-report must be a .json file below .local")
     if (BASE_SOURCE / EXCLUDED_KEY_BLOB).exists():
         raise RuntimeError("refusing source tree containing the excluded built-in key header")
     provenance = json.loads((ROOT / ".local/core-provenance.json").read_text())
@@ -107,7 +115,22 @@ def main() -> int:
         f"-DOPENSSL_ROOT_DIR={openssl}", "-DENABLE_MH4U_AOT=ON",
         f"-DMH4U_AOT_RUNTIME_ROOT={ROOT}", f"-DMH4U_AOT_ARTIFACT={args.artifact}")
     run("cmake", "--build", BUILD, "--target", "citra_libretro", "-j", args.jobs)
-    print(BUILD / "bin/Release/azahar_libretro.dylib")
+    core = BUILD / "bin/Release/azahar_libretro.dylib"
+    if args.build_report:
+        manifest = json.loads(args.manifest.read_text())
+        if manifest.get("input_sha256") != digest:
+            raise RuntimeError("generated manifest is not bound to the verified title code")
+        report = {
+            "schema_version": 1,
+            "title_code_sha256": digest,
+            "artifact": {"path": str(args.artifact.resolve().relative_to(ROOT)),
+                         "sha256": sha256(args.artifact)},
+            "manifest": {"path": str(args.manifest.resolve().relative_to(ROOT)),
+                         "sha256": sha256(args.manifest)},
+            "core": {"path": str(core.resolve().relative_to(ROOT)), "sha256": sha256(core)},
+        }
+        args.build_report.write_text(json.dumps(report, indent=2) + "\n")
+    print(core)
     return 0
 
 

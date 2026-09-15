@@ -2,6 +2,24 @@
 
 ## Implementazione AOT + Metal in corso — 2026-09-15
 
+Preservazione AOT conclusa: set per ogni core solo a ingresso con budget positivo;
+parser rigido richiede tutti quattro core, binding hash input/source/manifest/core,
+subset emitted verificato. Mandatory prima BFS, stop oltre 1024, lista completa pending.
+Due cicli finali in 194.8s: 149 hot al primo; 152 mandatory tutti emessi al secondo,
+167 hot e 17 pending. MissingBlock finale 0x104664/FPSCR03000000, zero video/fallback.
+CTest AOT 21/21 PASS (23 casi unit parser/decisioni). Report finale sotto
+.local/aot-hot-preservation-final-20260915; vecchio aot-hot-batch interrotto NON finale.
+Patch standalone/combined ARM_Aot byte-identici; Sol/Astra review conclusa.
+Ulteriore probe Metal NewGame incontra rifiuto alphaDot3; Sol sta correggendo il
+solo caso in cui colorDot3_RGBA bypassa alphaop, con test GPU e repro fresco.
+
+Validazione Metal successiva: menu principale raggiunto con 2700 frame freschi,
+121591 submission, 2581 frame non neri, 133s wall contro 9.9s Vulkan. Catture ispezionate:
+logo/menu/testo orientati correttamente; ancora CPU JIT, nessuna prova gameplay/AOTboot.
+Evidenza .local/pica-metal-extended-boot, input e hash core registrati. Salvataggi
+canonici e app invariati. Ripresa dopo interruzione: nessun processo residuo; Sol
+sta chiudendo guardbudget/parser completo/coreID attesi/lista pending nella preservazione AOT.
+
 Cache texture Metal verificata: una sola entry owned, chiave addr/format/dims e
 confronto esatto bytes guest dopo flush alias. Test 3/3 PICA root PASS; A/B fresco
 450 frame in 20.8s e 1500 frame in 72.2s (prima timeout 90/180s), 59858 draw, 39788 hit/14830 miss.
@@ -10,7 +28,7 @@ con Vulkan; residui pixel e gap prestazioni presenti, nessuna prova gameplay.
 Evidenza .local/pica-metal-cache-450b e .local/pica-metal-cache-1500. Corehash
 2afb70e6c747de5421b593b2313767d33d30ffd774366fb742ce353fe5cc4ca1.
 AOT: Sol sta preservando descriptor realmente attraversati prima BFS speculativa,
-con telemetria bounded e sole due iterazioni reali di verifica autorizzate.
+con telemetria bounded e due iterazioni reali previste per questa verifica.
 
 Core unico AOT+Metal implementato e verificato: helper tools/aot/build_combined_core.py,
 patch experimental-aot-metal-core-adapter.patch, artifact iter08 già verificato.

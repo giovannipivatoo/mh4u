@@ -25,9 +25,14 @@ FPSCR_MODE_MASK = 0x07F70000
 IT_MASK = 0x0600FC00
 PRIMARY_DESCRIPTOR = "0x100000,0x10,0x03c00010"
 HEX_U32 = re.compile(r"0x[0-9a-fA-F]{1,8}\Z")
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class ReportError(ValueError):
+    pass
+
+
+class CapacityError(ReportError):
     pass
 
 
@@ -111,6 +116,59 @@ def descriptor_from_report(report: dict, code_size: int) -> Descriptor:
     return descriptor
 
 
+def hot_descriptors_from_report(report: dict, code_size: int, expected_input_sha256: str,
+                                expected_core_sha256: str) -> set[Descriptor]:
+    if (not SHA256.fullmatch(expected_input_sha256) or
+            not SHA256.fullmatch(expected_core_sha256)):
+        raise ReportError("expected telemetry provenance is invalid")
+    if report.get("aot_hot_telemetry_parse_error") is not False:
+        raise ReportError("AOT hot descriptor telemetry could not be parsed")
+    if report.get("core_sha256") != expected_core_sha256:
+        raise ReportError("smoke report is not bound to the iteration core")
+    sets = report.get("aot_hot_descriptor_sets")
+    if not isinstance(sets, list) or not sets:
+        raise ReportError("AOT hot descriptor telemetry is missing")
+    expected_core_ids = report.get("aot_expected_core_ids")
+    if (not isinstance(expected_core_ids, list) or
+            any(type(core_id) is not int or core_id < 0 for core_id in expected_core_ids)):
+        raise ReportError("expected AOT core IDs are invalid")
+    result = set()
+    core_ids = set()
+    for item in sets:
+        if not isinstance(item, dict):
+            raise ReportError("AOT hot descriptor set must be an object")
+        core_id = item.get("core_id")
+        count = item.get("count")
+        entries = item.get("entries")
+        if (type(core_id) is not int or core_id < 0 or core_id in core_ids or
+                type(count) is not int or not 0 <= count <= 1024 or
+                item.get("overflow") is not False or not isinstance(entries, list) or
+                len(entries) != count or item.get("input_sha256") != expected_input_sha256 or
+                item.get("core_sha256") != expected_core_sha256):
+            raise ReportError("AOT hot descriptor telemetry is inconsistent")
+        core_ids.add(core_id)
+        per_core = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ReportError("AOT hot descriptor entry must be an object")
+            descriptor = normalize_descriptor(
+                report_u32(entry, "pc"), report_u32(entry, "cpsr_mode"),
+                report_u32(entry, "fpscr_mode"))
+            instruction_bytes = 2 if descriptor.cpsr_mode & 0x20 else 4
+            if (code_size < instruction_bytes or descriptor.pc < CODE_BASE or
+                    descriptor.pc - CODE_BASE > code_size - instruction_bytes):
+                raise ReportError("AOT hot descriptor is outside the verified title code")
+            per_core.add(descriptor)
+        if len(per_core) != count:
+            raise ReportError("AOT hot descriptor telemetry contains duplicates")
+        result.update(per_core)
+    if sorted(core_ids) != expected_core_ids:
+        raise ReportError("AOT hot descriptor core IDs are incomplete")
+    if not result:
+        raise ReportError("AOT hot descriptor telemetry contains no executed blocks")
+    return result
+
+
 def decide_next(report: dict, known: set[Descriptor], previous: Descriptor | None,
                 code_size: int) -> tuple[str, Descriptor | None]:
     descriptor = descriptor_from_report(report, code_size)
@@ -119,6 +177,21 @@ def decide_next(report: dict, known: set[Descriptor], previous: Descriptor | Non
     if descriptor in known:
         return "duplicate-descriptor", descriptor
     return "add-descriptor", descriptor
+
+
+def mandatory_additions(known: set[Descriptor], hot: set[Descriptor],
+                        missing: Descriptor, capacity: int = 1024) -> list[Descriptor]:
+    additions = sorted(hot - known)
+    if missing not in known and missing not in additions:
+        additions.append(missing)
+    if len(known) + len(additions) > capacity:
+        raise CapacityError(
+            f"required descriptor count {len(known) + len(additions)} exceeds {capacity}")
+    return additions
+
+
+def pending_descriptors(added: list[Descriptor], compiled_added_count: int) -> list[Descriptor]:
+    return added[compiled_added_count:]
 
 
 def sha256(path: pathlib.Path) -> str:
@@ -240,6 +313,7 @@ def main() -> int:
         "stop_reason": "running",
     }
     compiled_added_count = 0
+    observed_hot = set()
     write_json(report_path, report)
     previous: Descriptor | None = None
     for index in range(1, args.iterations + 1):
@@ -251,10 +325,12 @@ def main() -> int:
         iteration_dir.mkdir()
         artifact = iteration_dir / "title.cpp"
         manifest = iteration_dir / "title.json"
+        build_report = iteration_dir / "build-binding.json"
         build_command = [
             sys.executable, str(ROOT / "tools/aot/build_core_adapter.py"),
             "--generator", str(generator), "--jobs", str(args.jobs),
             "--artifact", str(artifact), "--manifest", str(manifest),
+            "--build-report", str(build_report),
         ]
         for descriptor in added:
             build_command.extend(("--entry-descriptor", descriptor.argument()))
@@ -293,16 +369,56 @@ def main() -> int:
             iteration["build"]["manifest_error"] = str(error)
             report["stop_reason"] = "invalid-generator-manifest"
             break
+        try:
+            binding = json.loads(build_report.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            iteration["build"]["binding_error"] = str(error)
+            report["stop_reason"] = "invalid-build-binding"
+            break
+        core = build_core_adapter.BUILD / "bin/Release/azahar_libretro.dylib"
+        expected_binding = {
+            "schema_version": 1,
+            "title_code_sha256": report["inputs"]["title_code"]["sha256"],
+            "artifact": {"path": str(artifact.relative_to(ROOT)), "sha256": sha256(artifact)},
+            "manifest": {"path": str(manifest.relative_to(ROOT)), "sha256": sha256(manifest)},
+            "core": {"path": str(core.relative_to(ROOT)), "sha256": sha256(core)},
+        }
+        if binding != expected_binding or generated_manifest.get("input_sha256") != binding["title_code_sha256"]:
+            report["stop_reason"] = "iteration-binding-mismatch"
+            break
         if (generated_manifest.get("max_blocks") != 1024 or
                 generated_manifest.get("max_guest_instruction_fetches") != 65536):
             report["stop_reason"] = "translation-limit-mismatch"
             break
+        try:
+            emitted_list = [
+                normalize_descriptor(report_u32(item, "pc"), report_u32(item, "cpsr_mode"),
+                                     report_u32(item, "fpscr_mode"))
+                for item in generated_manifest["emitted_descriptors"]
+            ]
+            emitted = set(emitted_list)
+            mandatory_entries = {
+                normalize_descriptor(report_u32(item, "pc"), report_u32(item, "cpsr_mode"),
+                                     report_u32(item, "fpscr_mode"))
+                for item in generated_manifest["entry_descriptors"]
+            }
+        except (AttributeError, KeyError, TypeError, ReportError) as error:
+            iteration["build"]["descriptor_manifest_error"] = str(error)
+            report["stop_reason"] = "invalid-generator-manifest"
+            break
+        if (generated_manifest.get("mandatory_entries_emitted") is not True or
+                generated_manifest.get("mandatory_entry_descriptor_count") != len(known) or
+                generated_manifest.get("emitted_descriptor_count") != len(emitted_list) or
+                len(emitted) != len(emitted_list) or mandatory_entries != known or
+                not known.issubset(emitted)):
+            report["stop_reason"] = "mandatory-descriptor-evicted"
+            break
         compiled_added_count = len(added)
-        core = build_core_adapter.BUILD / "bin/Release/azahar_libretro.dylib"
         iteration["artifacts"] = {
-            "source_sha256": sha256(artifact),
-            "manifest_sha256": sha256(manifest),
-            "core_sha256": sha256(core),
+            "source_sha256": binding["artifact"]["sha256"],
+            "manifest_sha256": binding["manifest"]["sha256"],
+            "core_sha256": binding["core"]["sha256"],
+            "build_binding": binding,
             "generator_manifest": generated_manifest,
         }
         remaining = deadline - time.monotonic()
@@ -346,30 +462,52 @@ def main() -> int:
             break
         iteration["smoke_report"] = smoke_report
         try:
+            hot = hot_descriptors_from_report(
+                smoke_report, code.stat().st_size,
+                report["inputs"]["title_code"]["sha256"],
+                iteration["artifacts"]["core_sha256"])
+            if not hot.issubset(emitted):
+                raise ReportError("hot descriptor is absent from the generated manifest")
+        except (ReportError, TypeError) as error:
+            iteration["decision_error"] = str(error)
+            report["stop_reason"] = "invalid-hot-telemetry"
+            break
+        try:
             decision, descriptor = decide_next(smoke_report, known, previous, code.stat().st_size)
         except (ReportError, TypeError) as error:
             iteration["decision_error"] = str(error)
             report["stop_reason"] = "invalid-smoke-report"
             break
+        observed_hot.update(hot)
+        iteration["hot_descriptors"] = [item.record() for item in sorted(hot)]
+        iteration["hot_descriptor_union"] = [item.record() for item in sorted(observed_hot)]
         iteration["decision"] = decision
         iteration["observed_descriptor"] = descriptor.record()
         if decision != "add-descriptor":
             report["stop_reason"] = decision
             break
+        try:
+            additions = mandatory_additions(known, observed_hot, descriptor)
+        except CapacityError as error:
+            iteration["decision_error"] = str(error)
+            report["stop_reason"] = "mandatory-capacity-exceeded"
+            break
         previous = descriptor
-        known.add(descriptor)
-        added.append(descriptor)
-        print(f"iteration {index}: add {descriptor.argument()}", flush=True)
+        known.update(additions)
+        added.extend(additions)
+        print(f"iteration {index}: preserve {len(additions)} descriptors; "
+              f"missing {descriptor.argument()}", flush=True)
         report["stop_reason"] = "max-iterations" if index == args.iterations else "running"
         write_json(report_path, report)
     report["elapsed_seconds"] = round(args.total_timeout - max(0, deadline - time.monotonic()), 3)
     report["discovered_descriptors"] = [item.record() for item in added]
+    report["observed_hot_descriptor_union"] = [item.record() for item in sorted(observed_hot)]
     report["compiled_discovered_descriptors"] = [
         item.record() for item in added[:compiled_added_count]
     ]
-    report["pending_descriptor"] = (
-        added[compiled_added_count].record() if compiled_added_count < len(added) else None
-    )
+    report["pending_descriptors"] = [
+        item.record() for item in pending_descriptors(added, compiled_added_count)
+    ]
     write_json(report_path, report)
     print(json.dumps({
         "manifest": str(report_path.relative_to(ROOT)),

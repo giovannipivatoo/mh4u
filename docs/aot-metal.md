@@ -252,3 +252,37 @@ speedup claim for Metal over Vulkan. Both final captures show the Circle Pad Pro
 activation message, with matching orientation and layout. Pixel differences
 remain (RGB MAE 0.843/255, maximum 115); these setup screens do not prove gameplay.
 Captures and exact core/input hashes are under `.local/pica-metal-cache-1500/`.
+
+A subsequent fresh 2700-frame run adds A presses through the setup dialogs. Both
+Metal and Vulkan reach the main menu; the captures show the title logo, menu
+buttons and correctly oriented text. Metal submits 121591 draws and completes in
+133.0 seconds wall-clock versus 9.9 seconds for Vulkan. It reports 2581 nonblack
+video frames and zero Vulkan readback frames. The host's software-renderer label
+selects the shared RAM presenter; the explicit core Metal banner and submission
+telemetry identify the actual rasterizer. These runs use the JIT reference CPU,
+not AOT. Main-menu rendering is not gameplay validation. Evidence and matching
+input/core hashes remain in `.local/pica-metal-extended-boot/`.
+
+## Preserving observed AOT coverage
+
+The offline loop now retains every descriptor observed at an executable block
+entry with positive tick budget. Each guest core emits one bounded set, including
+empty sets for idle cores; the parser requires every expected core ID and rejects
+malformed or incomplete lines. Input, generated-source, manifest and loaded-core
+hashes bind observations to the corresponding build. Each observed descriptor
+must also appear in that build's emitted-descriptor manifest.
+
+All retained descriptors become mandatory seeds before speculative BFS. Missing
+mandatory entries or a mandatory set larger than 1024 stop the build; no eviction
+or automatic cap increase is permitted. All uncompiled additions are listed in
+`pending_descriptors`, separately from the latest missing-block exit.
+
+Two fresh verification cycles completed in 194.8 seconds. Cycle 1 executed 149
+unique descriptors; cycle 2 emitted all 152 mandatory seeds and executed 167 unique
+descriptors, leaving 17 additions pending. Both stayed at 1024 blocks and within
+65536 fetches, with complete telemetry for all four guest cores. The final missing
+ARM descriptor is `0x00104664`, FPSCR mode `0x03000000`; no video or fallback was
+observed. The 21 AOT CTests pass, including 23 parser/decision unit cases.
+The final report is `.local/aot-hot-preservation-final-20260915/offline-expansion.json`.
+The older interrupted `.local/aot-hot-batch-20260915` is retained as incomplete
+evidence and must not be used as the final result.

@@ -104,10 +104,10 @@ index 00a3ac6..c2bd3a9 100644
  endif()
 diff --git a/src/core/arm/aot/arm_aot.cpp b/src/core/arm/aot/arm_aot.cpp
 new file mode 100644
-index 0000000..7a7b22a
+index 0000000..9d98487
 --- /dev/null
 +++ b/src/core/arm/aot/arm_aot.cpp
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,355 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
 +#include "core/arm/aot/arm_aot.h"
@@ -189,12 +189,15 @@ index 0000000..7a7b22a
 +    static bool AddTicks(void* context, u64 elapsed, u64* remaining) {
 +        auto& self = *static_cast<Callbacks*>(context);
 +        if (!remaining || elapsed > static_cast<u64>(std::numeric_limits<s64>::max())) return false;
-+        if (elapsed == 0) ++self.parent.block_count;
 +        self.parent.GetTimer().AddTicks(elapsed);
 +        const s64 downcount = self.parent.GetTimer().GetDowncount();
 +        *remaining = downcount > 0 && !self.parent.reschedule_requested
 +                         ? static_cast<u64>(downcount)
 +                         : 0;
++        if (elapsed == 0 && *remaining > 0) {
++            ++self.parent.block_count;
++            if (!self.parent.RecordHotDescriptor()) return false;
++        }
 +        return true;
 +    }
 +
@@ -264,7 +267,9 @@ index 0000000..7a7b22a
 +      exclusive_monitor(exclusive_monitor_), callbacks(std::make_unique<Callbacks>(*this)),
 +      current_page_table(memory.GetCurrentPageTable()) {}
 +
-+ARM_Aot::~ARM_Aot() = default;
++ARM_Aot::~ARM_Aot() {
++    DumpHotDescriptors();
++}
 +
 +void ARM_Aot::Run() {
 +    if (break_flag) return;
@@ -417,6 +422,33 @@ index 0000000..7a7b22a
 +    return false;
 +}
 +
++bool ARM_Aot::RecordHotDescriptor() {
++    constexpr std::size_t max_hot_descriptors = 1024;
++    const auto descriptor = std::tuple{state.regs[15], state.cpsr & 0x0600fe20U,
++                                       state.fpscr & 0x07f70000U};
++    if (hot_descriptors.find(descriptor) != hot_descriptors.end()) return true;
++    if (hot_descriptors.size() >= max_hot_descriptors) {
++        hot_descriptor_overflow = true;
++        return false;
++    }
++    hot_descriptors.insert(descriptor);
++    return true;
++}
++
++void ARM_Aot::DumpHotDescriptors() {
++    if (hot_descriptors_dumped) return;
++    hot_descriptors_dumped = true;
++    std::string entries;
++    for (const auto& [pc, cpsr, fpscr] : hot_descriptors) {
++        if (!entries.empty()) entries += ';';
++        entries += fmt::format("{:08x},{:08x},{:08x}", pc, cpsr, fpscr);
++    }
++    const auto* identity = mh4u_aot_identity();
++    LOG_INFO(Core_ARM11, "AOT hot descriptors: input_sha256={} core={} count={} overflow={} entries={}",
++             identity && identity->input_sha256 ? identity->input_sha256 : "missing", GetID(),
++             hot_descriptors.size(), hot_descriptor_overflow ? 1 : 0, entries);
++}
++
 +void ARM_Aot::Fail(const char* reason, const mh4u::aot::BlockResult* result) {
 +    std::string detail = reason;
 +    if (result) {
@@ -424,6 +456,7 @@ index 0000000..7a7b22a
 +                              static_cast<u32>(result->exit), result->next_pc, result->detail);
 +    }
 +    detail += fmt::format(" [cpsr={:08x}, fpscr={:08x}]", state.cpsr, state.fpscr);
++    DumpHotDescriptors();
 +    LOG_CRITICAL(Core_ARM11, "{}", detail);
 +    SetBreakFlag();
 +    system.SetStatus(System::ResultStatus::ErrorCoreExceptionRaised, detail.c_str());
@@ -432,15 +465,17 @@ index 0000000..7a7b22a
 +} // namespace Core
 diff --git a/src/core/arm/aot/arm_aot.h b/src/core/arm/aot/arm_aot.h
 new file mode 100644
-index 0000000..d08bb0c
+index 0000000..c21bf1f
 --- /dev/null
 +++ b/src/core/arm/aot/arm_aot.h
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,83 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
 +#pragma once
 +
 +#include <memory>
++#include <set>
++#include <tuple>
 +
 +#include "aot/runtime.h"
 +#include "core/arm/arm_interface.h"
@@ -490,6 +525,8 @@ index 0000000..d08bb0c
 +private:
 +    class Callbacks;
 +    void Fail(const char* reason, const mh4u::aot::BlockResult* result = nullptr);
++    bool RecordHotDescriptor();
++    void DumpHotDescriptors();
 +    bool VerifyArtifactIdentity();
 +    bool OverlapsCompiledCode(u32 address, unsigned bits) const;
 +
@@ -509,6 +546,9 @@ index 0000000..d08bb0c
 +    u32 local_exclusive_address{};
 +    u64 run_count{};
 +    u64 block_count{};
++    std::set<std::tuple<u32, u32, u32>> hot_descriptors;
++    bool hot_descriptor_overflow{};
++    bool hot_descriptors_dumped{};
 +};
 +
 +} // namespace Core

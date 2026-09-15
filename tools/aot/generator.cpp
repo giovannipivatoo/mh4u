@@ -782,6 +782,13 @@ int main(int argc, char** argv) {
                 entry_descriptors.push_back(extra);
             }
         }
+        const std::size_t mandatory_entry_count = entry_descriptors.size();
+        if (mandatory_entry_count > options.max_blocks) {
+            throw std::runtime_error("mandatory entry descriptor count " +
+                                     std::to_string(mandatory_entry_count) +
+                                     " exceeds --max-blocks " +
+                                     std::to_string(options.max_blocks));
+        }
         std::vector<IR::Block> blocks;
         std::vector<std::string> emitted_sources;
         std::vector<std::string> opcodes;
@@ -790,7 +797,8 @@ int main(int argc, char** argv) {
         bool reached_svc = false;
         std::uint32_t first_next_pc = 0;
         while (!pending.empty() && blocks.size() < options.max_blocks &&
-               (!reached_svc || options.continue_after_svc)) {
+               (!reached_svc || options.continue_after_svc ||
+                blocks.size() < mandatory_entry_count)) {
             A32::LocationDescriptor location = pending.front();
             pending.pop_front();
             IR::Block block = A32::Translate(location, &source, translation_options);
@@ -808,6 +816,9 @@ int main(int argc, char** argv) {
                 if (discovered.insert(target.UniqueHash()).second) pending.push_back(target);
             }
             blocks.push_back(std::move(block));
+        }
+        if (blocks.size() < mandatory_entry_count) {
+            throw std::runtime_error("not all mandatory entry descriptors were emitted");
         }
         std::ostringstream generated;
         for (const std::string& emitted : emitted_sources) generated << emitted;
@@ -834,6 +845,8 @@ int main(int argc, char** argv) {
                  << "  \"pc\": \"" << Hex(pc) << "\",\n"
                  << "  \"thumb\": " << ((cpsr & 0x20U) ? "true" : "false") << ",\n"
                  << "  \"entry_descriptor_count\": " << entry_descriptors.size() << ",\n"
+                 << "  \"mandatory_entry_descriptor_count\": " << mandatory_entry_count << ",\n"
+                 << "  \"mandatory_entries_emitted\": true,\n"
                  << "  \"entry_descriptors\": [";
         for (std::size_t index = 0; index < entry_descriptors.size(); ++index) {
             if (index) manifest << ", ";
@@ -842,6 +855,16 @@ int main(int argc, char** argv) {
                      << Hex(entry.CPSR().Value() & 0x0600fe20U)
                      << "\",\"fpscr_mode\":\""
                      << Hex(entry.FPSCR().Value() & 0x07f70000U) << "\"}";
+        }
+        manifest << "],\n  \"emitted_descriptor_count\": " << blocks.size()
+                 << ",\n  \"emitted_descriptors\": [";
+        for (std::size_t index = 0; index < blocks.size(); ++index) {
+            if (index) manifest << ", ";
+            const A32::LocationDescriptor emitted{blocks[index].Location()};
+            manifest << "{\"pc\":\"" << Hex(emitted.PC()) << "\",\"cpsr_mode\":\""
+                     << Hex(emitted.CPSR().Value() & 0x0600fe20U)
+                     << "\",\"fpscr_mode\":\""
+                     << Hex(emitted.FPSCR().Value() & 0x07f70000U) << "\"}";
         }
         manifest << "],\n"
                  << "  \"cycle_count\": " << total_cycles << ",\n"

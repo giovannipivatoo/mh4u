@@ -328,6 +328,27 @@ add_test(NAME aot-unsupported-fails-closed COMMAND "${Python3_EXECUTABLE}"
 add_test(NAME aot-offline-expansion-decisions COMMAND "${Python3_EXECUTABLE}"
   "${CMAKE_SOURCE_DIR}/tests/aot/expand_core_graph_test.py")
 
+set(mandatory_fixture "${CMAKE_SOURCE_DIR}/tests/aot/mandatory.fixture")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${mandatory_fixture}")
+file(SHA256 "${mandatory_fixture}" mandatory_sha)
+set(mandatory_generated "${MH4U_AOT_ARTIFACT_ROOT}/mandatory.cpp")
+set(mandatory_manifest "${MH4U_AOT_ARTIFACT_ROOT}/mandatory.json")
+add_custom_command(OUTPUT "${mandatory_generated}" "${mandatory_manifest}"
+  COMMAND "$<TARGET_FILE:mh4u-aot-generator>" --fixture "${mandatory_fixture}"
+    --max-blocks 2 --entry-descriptor 0x1010,0x10,0
+    --input-sha256 "${mandatory_sha}" --artifact-root "${CMAKE_SOURCE_DIR}/.local"
+    --output "${mandatory_generated}" --manifest "${mandatory_manifest}"
+  DEPENDS mh4u-aot-generator "${mandatory_fixture}"
+  VERBATIM)
+add_custom_target(mh4u-aot-mandatory-artifact ALL
+  DEPENDS "${mandatory_generated}" "${mandatory_manifest}")
+add_test(NAME aot-mandatory-seeds-preserved COMMAND "${Python3_EXECUTABLE}"
+  "${CMAKE_SOURCE_DIR}/tests/aot/mandatory_test.py" --manifest "${mandatory_manifest}")
+add_test(NAME aot-mandatory-capacity-fails-closed COMMAND "${Python3_EXECUTABLE}"
+  "${CMAKE_SOURCE_DIR}/tests/aot/mandatory_test.py"
+  --generator "$<TARGET_FILE:mh4u-aot-generator>" --fixture "${mandatory_fixture}"
+  --input-sha256 "${mandatory_sha}" --artifact-root "${MH4U_AOT_ARTIFACT_ROOT}")
+
 set(MH4U_TITLE_CODE "${CMAKE_SOURCE_DIR}/.local/game/exefs/code.bin")
 set(MH4U_TITLE_CODE_SHA256 "63940d7ef1fecc119f9fb820f5f6a2cf2f2a5549e4a70f00319fbd6c9c1ad8dc")
 if(EXISTS "${MH4U_TITLE_CODE}")

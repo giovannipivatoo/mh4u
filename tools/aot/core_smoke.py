@@ -12,6 +12,49 @@ import subprocess
 import sys
 
 
+HOT_MARKER = "AOT hot descriptors:"
+CORE_BANNER_MARKER = "Experimental ARM_Aot active:"
+HOT_LINE = re.compile(
+    r".*AOT hot descriptors: input_sha256=([0-9a-fA-F]{64}|missing) core=(\d+) "
+    r"count=(\d+) overflow=([01]) entries=((?:[0-9a-fA-F]{8},[0-9a-fA-F]{8},"
+    r"[0-9a-fA-F]{8})(?:;[0-9a-fA-F]{8},[0-9a-fA-F]{8},[0-9a-fA-F]{8})*)?")
+CORE_BANNER_LINE = re.compile(r".*Experimental ARM_Aot active: ([1-9]\d*) guest cores")
+
+
+def parse_hot_telemetry(stderr: str, core_sha256: str) -> tuple[list[dict], bool, list[int]]:
+    banner_lines = [line for line in stderr.splitlines() if CORE_BANNER_MARKER in line]
+    banner_matches = [CORE_BANNER_LINE.fullmatch(line) for line in banner_lines]
+    parse_error = (len(banner_matches) != 1 or any(match is None for match in banner_matches))
+    expected_core_ids = (list(range(int(banner_matches[0].group(1))))
+                         if len(banner_matches) == 1 and banner_matches[0] else [])
+
+    hot_sets = []
+    for line in (line for line in stderr.splitlines() if HOT_MARKER in line):
+        match = HOT_LINE.fullmatch(line)
+        if match is None:
+            parse_error = True
+            continue
+        input_sha, core_id, count, overflow, entries_text = match.groups()
+        entries = []
+        if entries_text:
+            for entry in entries_text.split(";"):
+                pc, cpsr, fpscr = entry.split(",")
+                entries.append({"pc": f"0x{pc}", "cpsr_mode": f"0x{cpsr}",
+                                "fpscr_mode": f"0x{fpscr}"})
+        hot_sets.append({
+            "input_sha256": input_sha.lower(),
+            "core_sha256": core_sha256,
+            "core_id": int(core_id),
+            "count": int(count),
+            "overflow": overflow == "1",
+            "entries": entries,
+        })
+    actual_core_ids = [item["core_id"] for item in hot_sets]
+    if sorted(actual_core_ids) != expected_core_ids or len(set(actual_core_ids)) != len(hot_sets):
+        parse_error = True
+    return hot_sets, parse_error, expected_core_ids
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", required=True)
@@ -74,6 +117,7 @@ def main() -> int:
         r"AOT execution stopped .*\[cpsr=([0-9a-fA-F]+), fpscr=([0-9a-fA-F]+)\]",
         stderr)
     runs = re.findall(r"AOT run=(\d+) blocks=(\d+) exit=(\d+) pc=([0-9a-fA-F]+)", stderr)
+    hot_sets, hot_parse_error, expected_core_ids = parse_hot_telemetry(stderr, core_sha256)
     expected_failure = failure is not None and int(failure.group(1)) == 6
     identity_verified = "AOT identity verified:" in stderr
     aot_backend_active = "Experimental ARM_Aot active:" in stderr
@@ -97,6 +141,9 @@ def main() -> int:
         "aot_fpscr": f"0x{failure_state.group(2)}" if failure_state else None,
         "aot_run_count": int(runs[-1][0]) if runs else 0,
         "aot_block_callbacks": int(runs[-1][1]) if runs else 0,
+        "aot_hot_descriptor_sets": hot_sets,
+        "aot_hot_telemetry_parse_error": hot_parse_error,
+        "aot_expected_core_ids": expected_core_ids,
         "first_run_exit": int(runs[0][2]) if runs else None,
         "identity_verified": identity_verified,
         "aot_backend_active": aot_backend_active,
@@ -116,7 +163,8 @@ def main() -> int:
     passed = (not timed_out and returncode == 1 and expected_failure and
               identity_verified and report["first_run_exit"] == 2 and
               report["aot_cpsr"] is not None and report["aot_fpscr"] is not None and
-              report["frame_limit_reached"] is False and report["video_frames"] == 0)
+              not hot_parse_error and report["frame_limit_reached"] is False and
+              report["video_frames"] == 0)
     if args.require_aot_metal:
         passed = passed and aot_backend_active and pica_metal_backend_active
     return 0 if passed else 1
