@@ -62,6 +62,7 @@ struct CoreRasterizer::Impl {
     bool dirty_depth_stencil{};
     uint64_t metal_draws{};
     uint64_t submissions{};
+    AzaharTexture0Cache texture0_cache{};
     bool logged_non_rgba_texture{};
     bool logged_procedural_texture{};
     std::string fatal{};
@@ -73,8 +74,12 @@ struct CoreRasterizer::Impl {
     }
 
     ~Impl() {
-        LOG_INFO(Render, "PICA Metal stopped: metal_draws={} submissions={} reason={}", metal_draws,
-                 submissions, fatal.empty() ? "shutdown" : fatal);
+        const auto& texture_stats = texture0_cache.stats();
+        LOG_INFO(Render,
+                 "PICA Metal stopped: metal_draws={} submissions={} texture0_cache_hits={} "
+                 "texture0_cache_misses={} texture0_decoded_bytes={} reason={}",
+                 metal_draws, submissions, texture_stats.hits, texture_stats.misses,
+                 texture_stats.decoded_bytes, fatal.empty() ? "shutdown" : fatal);
         mark_target(false);
     }
 
@@ -348,7 +353,6 @@ void CoreRasterizer::AddTriangle(const Pica::OutputVertex& v0, const Pica::Outpu
 void CoreRasterizer::DrawTriangles() {
     if (!impl_->fatal.empty() || impl_->vertices.empty()) return;
     const auto& regs = impl_->pica.regs.internal;
-    AzaharTexture0 decoded_texture{};
     TextureRgba8 texture{};
     const TextureRgba8* texture_pointer = nullptr;
     if (regs.texturing.main_config.texture0_enable) {
@@ -390,7 +394,8 @@ void CoreRasterizer::DrawTriangles() {
             return;
         }
         const auto encoded = texture_ref.GetReadBytes<uint8_t>(size);
-        const ValidationResult decoded = decode_azahar_texture0(regs, encoded, decoded_texture);
+        const ValidationResult decoded =
+            impl_->texture0_cache.resolve(regs, address, encoded, texture);
         if (!decoded) {
             impl_->fail("core adapter failed texture0 decode: " + decoded.message);
             impl_->vertices.clear();
@@ -405,7 +410,6 @@ void CoreRasterizer::DrawTriangles() {
                      format_value, config.width.Value(), config.height.Value(),
                      layout.encoded_bytes, layout.decoded_bytes);
         }
-        texture = decoded_texture.view();
         texture_pointer = &texture;
     }
     AzaharProceduralTexture decoded_procedural{};

@@ -235,8 +235,20 @@ missing PC `0x00104614`, and no timeout or video frames occur. Core SHA-256 is
 build provenance and smoke agree. This establishes the combined path, not a
 completed AOT boot or a game frame rendered with AOT execution.
 
-Further Metal input validation reached 427 frames in a sampled finite run; the
-450/1,500-frame attempts timed out. Sampling at that point attributed about 61%
+Before texture reuse, further Metal input validation reached 427 frames in a
+sampled finite run; the 450/1,500-frame attempts timed out. Sampling at that point attributed about 61%
 of main-thread samples to repeated texture decoding and 17% to draw-completion
 waits. These are sampled costs in that run, not whole-game performance measurements.
-The next optimization is bounded texture reuse with exact guest-byte validation.
+The core now keeps one decoded texture, keyed by address, format and dimensions,
+and compares every encoded byte before reuse. Color/depth aliases are flushed
+before lookup. Guest mutations force decoding; sampler state is still applied
+per draw. Tests check both cache decisions and the actual output/ownership.
+
+Fresh input runs now complete 450 frames in 20.8 seconds and 1,500 in 72.2 seconds,
+compared with the previous 90/180-second timeouts. The longer run reports 59,858
+Metal draws, 39,788 cache hits and 14,830 misses. Vulkan completes the corresponding
+1,500-frame run in 5.6 seconds; this is an experimental performance gap, not a
+speedup claim for Metal over Vulkan. Both final captures show the Circle Pad Pro
+activation message, with matching orientation and layout. Pixel differences
+remain (RGB MAE 0.843/255, maximum 115); these setup screens do not prove gameplay.
+Captures and exact core/input hashes are under `.local/pica-metal-cache-1500/`.

@@ -2,6 +2,16 @@
 
 ## Implementazione AOT + Metal in corso — 2026-09-15
 
+Cache texture Metal verificata: una sola entry owned, chiave addr/format/dims e
+confronto esatto bytes guest dopo flush alias. Test 3/3 PICA root PASS; A/B fresco
+450 frame in 20.8s e 1500 frame in 72.2s (prima timeout 90/180s), 59858 draw, 39788 hit/14830 miss.
+Cattura 1500: 'The Circle Pad Pro has been activated.', orientamento/layout coerenti
+con Vulkan; residui pixel e gap prestazioni presenti, nessuna prova gameplay.
+Evidenza .local/pica-metal-cache-450b e .local/pica-metal-cache-1500. Corehash
+2afb70e6c747de5421b593b2313767d33d30ffd774366fb742ce353fe5cc4ca1.
+AOT: Sol sta preservando descriptor realmente attraversati prima BFS speculativa,
+con telemetria bounded e sole due iterazioni reali di verifica autorizzate.
+
 Core unico AOT+Metal implementato e verificato: helper tools/aot/build_combined_core.py,
 patch experimental-aot-metal-core-adapter.patch, artifact iter08 già verificato.
 Build .local/aot-metal-combined-core-build; smoke .local/aot-metal-combined-smoke.

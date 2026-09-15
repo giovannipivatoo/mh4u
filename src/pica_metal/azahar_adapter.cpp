@@ -4,7 +4,10 @@
 #include "video_core/pica/regs_internal.h"
 #include "video_core/texture/texture_decode.h"
 
+#include <algorithm>
 #include <cstring>
+#include <limits>
+#include <utility>
 
 namespace mh4u::pica_metal {
 namespace {
@@ -147,6 +150,47 @@ ValidationResult decode_azahar_texture0(const Pica::RegsInternal& regs,
             std::memcpy(output.rgba8.data() + offset, value.AsArray(), 4);
         }
     }
+    return {};
+}
+
+ValidationResult AzaharTexture0Cache::resolve(const Pica::RegsInternal& regs,
+                                              uint32_t physical_address,
+                                              std::span<const uint8_t> encoded,
+                                              TextureRgba8& output) {
+    AzaharTextureLayout layout{};
+    const ValidationResult valid = azahar_texture0_layout(regs, layout);
+    if (!valid) return valid;
+    if (encoded.size() != layout.encoded_bytes)
+        return {Error::InvalidDraw, "PICA texture0 encoded span has the wrong size"};
+
+    const auto& config = regs.texturing.texture0;
+    const uint32_t format = static_cast<uint32_t>(regs.texturing.texture0_format.Value());
+    const bool hit = valid_ && physical_address_ == physical_address && format_ == format &&
+                     width_ == config.width && height_ == config.height &&
+                     encoded_.size() == encoded.size() &&
+                     std::equal(encoded.begin(), encoded.end(), encoded_.begin());
+    auto increment = [](uint64_t& counter, uint64_t amount = 1) {
+        counter += std::min(amount, std::numeric_limits<uint64_t>::max() - counter);
+    };
+    if (hit) {
+        increment(stats_.hits);
+        output = decoded_.view();
+        return {};
+    }
+
+    increment(stats_.misses);
+    AzaharTexture0 decoded{};
+    const ValidationResult result = decode_azahar_texture0(regs, encoded, decoded);
+    if (!result) return result;
+    physical_address_ = physical_address;
+    format_ = format;
+    width_ = config.width;
+    height_ = config.height;
+    encoded_.assign(encoded.begin(), encoded.end());
+    decoded_ = std::move(decoded);
+    valid_ = true;
+    increment(stats_.decoded_bytes, layout.decoded_bytes);
+    output = decoded_.view();
     return {};
 }
 

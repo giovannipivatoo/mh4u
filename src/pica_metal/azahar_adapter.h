@@ -22,6 +22,34 @@ struct AzaharTexture0 {
     TextureRgba8 view() const { return {width, height, width * 4, rgba8}; }
 };
 
+struct AzaharTexture0CacheStats {
+    uint64_t hits{};
+    uint64_t misses{};
+    uint64_t decoded_bytes{};
+};
+
+// One-entry owned cache for the live core adapter. The cache never retains a
+// guest-memory pointer: each lookup compares the current encoded bytes with an
+// owned copy before reusing decoded pixels.
+class AzaharTexture0Cache {
+public:
+    // output remains valid until a later cache miss succeeds or the cache is destroyed.
+    ValidationResult resolve(const Pica::RegsInternal& regs, uint32_t physical_address,
+                             std::span<const uint8_t> encoded, TextureRgba8& output);
+
+    const AzaharTexture0CacheStats& stats() const { return stats_; }
+
+private:
+    bool valid_{};
+    uint32_t physical_address_{};
+    uint32_t format_{};
+    uint32_t width_{};
+    uint32_t height_{};
+    std::vector<uint8_t> encoded_{};
+    AzaharTexture0 decoded_{};
+    AzaharTexture0CacheStats stats_{};
+};
+
 struct AzaharProceduralTexture {
     ProceduralTexture snapshot{};
 };

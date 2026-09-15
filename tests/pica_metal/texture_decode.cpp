@@ -92,7 +92,51 @@ int main() {
     if (azahar_texture0_layout(oversized, layout).error != Error::UnsupportedState)
         fail("oversized decoded texture was not rejected before allocation");
 
+    AzaharTexture0Cache cache{};
+    TextureRgba8 cached{};
+    std::vector<uint8_t> cache_bytes(expected_tile_bytes[0]);
+    if (!cache.resolve(rgba_regs, 0x18000000, cache_bytes, cached) ||
+        cache.stats().misses != 1 || cache.stats().hits != 0)
+        fail("first texture cache lookup was not a miss");
+    if (!cache.resolve(rgba_regs, 0x18000000, cache_bytes, cached) ||
+        cache.stats().hits != 1)
+        fail("identical owned texture cache lookup was not a hit");
+    const std::vector<uint8_t> cached_before_change(cached.pixels.begin(), cached.pixels.end());
+    cache_bytes[0] ^= 1;
+    if (!std::equal(cached.pixels.begin(), cached.pixels.end(), cached_before_change.begin()))
+        fail("texture cache retained a pointer into mutable guest bytes");
+    if (!cache.resolve(rgba_regs, 0x18000000, cache_bytes, cached) ||
+        cache.stats().misses != 2 ||
+        std::equal(cached.pixels.begin(), cached.pixels.end(), cached_before_change.begin()))
+        fail("texture byte change did not invalidate the cache");
+    if (!cache.resolve(rgba_regs, 0x18000100, cache_bytes, cached) ||
+        cache.stats().misses != 3)
+        fail("texture address change did not invalidate the cache");
+
+    auto rgb565_regs = registers(Format::RGB565);
+    auto rgba5551_regs = registers(Format::RGB5A1);
+    std::vector<uint8_t> same_size_format(expected_tile_bytes[3]);
+    if (!cache.resolve(rgb565_regs, 0x18000200, same_size_format, cached))
+        fail("RGB565 cache fixture was rejected");
+    const std::vector<uint8_t> rgb565_pixels(cached.pixels.begin(), cached.pixels.end());
+    if (!cache.resolve(rgba5551_regs, 0x18000200, same_size_format, cached) ||
+        cache.stats().misses != 5 ||
+        std::equal(cached.pixels.begin(), cached.pixels.end(), rgb565_pixels.begin()))
+        fail("same-size texture format change did not invalidate the cache");
+
+    auto wide_regs = registers(Format::RGBA8);
+    wide_regs.texturing.texture0.width.Assign(16);
+    auto tall_regs = registers(Format::RGBA8);
+    tall_regs.texturing.texture0.height.Assign(16);
+    std::vector<uint8_t> same_size_dimensions(512);
+    if (!cache.resolve(wide_regs, 0x18000300, same_size_dimensions, cached) ||
+        cached.width != 16 || cached.height != 8 ||
+        !cache.resolve(tall_regs, 0x18000300, same_size_dimensions, cached) ||
+        cached.width != 8 || cached.height != 16 || cache.stats().misses != 7 ||
+        cache.stats().decoded_bytes != 2304)
+        fail("same-size texture dimension change did not invalidate the cache");
+
     std::puts("{\"mode\":\"pica-metal-texture-decode\",\"passed\":true,"
               "\"format_sizes\":14,\"rgba8\":true,\"i4\":true,\"etc1a4\":true,"
-              "\"bounds\":true}");
+              "\"bounds\":true,\"cache_boundary\":true}");
 }
