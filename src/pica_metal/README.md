@@ -17,16 +17,19 @@ The conversion matches the pinned accelerated renderer:
   D16 or D24 before the Metal depth test. Clear depth uses the same truncation.
 - Six TEV stages preserve the accelerated generator's per-stage 8-bit rounding,
   delayed combiner-buffer visibility, stage-zero `Previous` substitution, and
-  color/alpha multipliers. The diagnostic software rasterizer intentionally
-  truncates some arithmetic instead; the golden records the known 157 vs 156
-  result for `200 * 200 / 255` rather than treating either path as hardware proof.
+  color/alpha multipliers. Filtered texture samples remain floating point until
+  the combiner output is rounded, as in the pinned shader generator. The
+  diagnostic software rasterizer intentionally truncates some arithmetic
+  instead; the golden records the known 157 vs 156 result for `200 * 200 / 255`
+  rather than treating either path as hardware proof.
 
-The first slice supports triangle lists, RGBA8 color and texture0, 2D sampling,
+The first slice supports triangle lists, RGBA8 color, all fourteen tiled PICA
+texture0 formats decoded by the pinned core (including ETC1/ETC1A4), 2D sampling,
 TEV, alpha test, culling, include scissor, Z buffering, D16/D24/D24S8 depth and
 stencil tests/writes and the PICA fixed-function blend equations and factors. It
 fails closed on exclude scissor, partial color masks, non-copy logic operations,
-W buffering, lighting, fog, procedural textures, mipmaps, other texture units and
-formats, shadow/gas modes, and custom clipping planes.
+W buffering, lighting, fog, procedural textures, mipmaps, other texture units,
+shadow/gas modes, and custom clipping planes.
 
 `Frame` keeps color and depth across ordered `DrawTriangles` batches. The lower
 level `Target` API also keeps an owned Metal color/depth-stencil target across
@@ -51,15 +54,17 @@ planes before discarding the target, including when the write overlaps only one
 of its intervals.
 
 This core seam deliberately supports one non-aliased RGBA8 target, the three PICA
-depth formats, and bounded tiled RGBA8 texture0. Fatal state is sticky. The
-candidate integration logs `metal_draws`, Metal `submissions`, and its stop
-reason, then terminates the libretro run instead of falling back to software
-rasterization.
+depth formats, and texture0 with separate 4 MiB encoded and decoded bounds. Fatal
+state is sticky. The candidate integration logs `metal_draws`, Metal
+`submissions`, and its stop reason, then terminates the libretro run instead of
+falling back to software rasterization.
 
-The current real-game smoke reached 54 Metal draw submissions before rejecting a
-non-RGBA8 texture and stopped before presenting a frame. This proves the live
-CPU-vertex-to-Metal seam and depth/stencil target lifecycle, not gameplay. A
-usable core renderer still needs more target formats and aliases, coherent
-multi-target lifetime, the real transfer/fill paths, more texture formats and
-procedural texturing. Vertex shader execution remains in the PICA core until a
-separate PICA shader-ISA translation path is implemented.
+The current real-game smoke reached 54 Metal draw submissions, decoded a coherent
+512x256 ETC1A4 texture (128 KiB encoded, 512 KiB RGBA), then rejected live
+procedural texture3 state and stopped. The headless presenter reported 52 black
+video frames. This proves the live CPU-vertex-to-Metal seam, depth/stencil target
+lifecycle, and compressed texture decode path, not gameplay. A usable core
+renderer still needs more target formats and aliases, coherent multi-target
+lifetime, the real transfer/fill paths, procedural texturing and lighting. Vertex
+shader execution remains in the PICA core until a separate PICA shader-ISA
+translation path is implemented.

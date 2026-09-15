@@ -72,20 +72,19 @@ vertex VertexOut pica_vertex(const device VertexIn* vertices [[buffer(0)]],
     return out;
 }
 
-uint4 source_value(uint source, uint4 primary, uint4 texture0, uint4 previous_buffer,
-                   uint4 constant_color, uint4 previous) {
+float4 source_value(uint source, float4 primary, float4 texture0, uint4 previous_buffer,
+                    uint4 constant_color, uint4 previous) {
     switch (source) {
     case 0: return primary;
     case 1: return texture0;
-    case 2: return previous_buffer;
-    case 3: return constant_color;
-    case 4: return previous;
+    case 2: return float4(previous_buffer) / 255.0;
+    case 3: return float4(constant_color) / 255.0;
+    case 4: return float4(previous) / 255.0;
     default: return 0.0;
     }
 }
 
-float3 modify_color(uint4 bytes, uint modifier) {
-    const float4 value = float4(bytes) / 255.0;
+float3 modify_color(float4 value, uint modifier) {
     switch (modifier) {
     case 0: return value.rgb;
     case 1: return 1.0 - value.rgb;
@@ -101,8 +100,7 @@ float3 modify_color(uint4 bytes, uint modifier) {
     }
 }
 
-float modify_alpha(uint4 bytes, uint modifier) {
-    const float4 value = float4(bytes) / 255.0;
+float modify_alpha(float4 value, uint modifier) {
     switch (modifier) {
     case 0: return value.a;
     case 1: return 1.0 - value.a;
@@ -163,8 +161,9 @@ fragment FragmentOut pica_fragment(VertexOut in [[stage_in]],
                                     constant FragmentState& state [[buffer(0)]],
                                     texture2d<float> texture0 [[texture(0)]],
                                     sampler texture0_sampler [[sampler(0)]]) {
-    const uint4 primary = uint4(clamp(in.color, 0.0, 1.0) * 255.0 + 0.5);
-    const uint4 sampled = uint4(texture0.sample(texture0_sampler, in.uv) * 255.0 + 0.5);
+    const float4 primary =
+        float4(uint4(clamp(in.color, 0.0, 1.0) * 255.0 + 0.5)) / 255.0;
+    const float4 sampled = texture0.sample(texture0_sampler, in.uv);
     uint4 previous_buffer = 0;
     uint4 next_buffer = state.initial_buffer;
     uint4 previous = 0;

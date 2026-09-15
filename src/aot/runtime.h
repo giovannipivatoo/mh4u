@@ -69,6 +69,7 @@ AddResult32 LogicalShiftRight32(std::uint32_t value, std::uint8_t amount, bool c
 AddResult32 ArithmeticShiftRight32(std::uint32_t value, std::uint8_t amount, bool carry);
 AddResult32 RotateRight32(std::uint32_t value, std::uint8_t amount, bool carry);
 AddResult32 RotateRightExtended(std::uint32_t value, bool carry);
+std::uint32_t PackedSaturatedSubU8(std::uint32_t lhs, std::uint32_t rhs);
 bool ConditionPassed(std::uint32_t cpsr, std::uint8_t condition);
 bool Read(const Callbacks& callbacks, std::uint32_t address, unsigned bits, std::uint64_t& value);
 bool Write(const Callbacks& callbacks, std::uint32_t address, unsigned bits, std::uint64_t value);

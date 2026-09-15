@@ -5,5 +5,7 @@ pc 0x1000
 cpsr 0x10
 ticks 100
 memory_size 0x2000
-word 0xe0c32190
+reg 0 0
+reg 1 0
+word 0xe0020190
 word 0xef00002a

@@ -254,6 +254,48 @@ add_test(NAME aot-rrx-register-matrix COMMAND "${Python3_EXECUTABLE}"
   --runner "$<TARGET_FILE:mh4u-aot-runner-rrx>"
   --fixture "${rrx_fixture}" --matrix)
 
+set(packed_uqsub8_fixture "${CMAKE_SOURCE_DIR}/tests/aot/packed_uqsub8.fixture")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${packed_uqsub8_fixture}")
+file(SHA256 "${packed_uqsub8_fixture}" packed_uqsub8_sha)
+set(packed_uqsub8_generated "${MH4U_AOT_ARTIFACT_ROOT}/packed-uqsub8.cpp")
+set(packed_uqsub8_manifest "${MH4U_AOT_ARTIFACT_ROOT}/packed-uqsub8.json")
+add_custom_command(OUTPUT "${packed_uqsub8_generated}" "${packed_uqsub8_manifest}"
+  COMMAND "$<TARGET_FILE:mh4u-aot-generator>" --fixture "${packed_uqsub8_fixture}"
+    --input-sha256 "${packed_uqsub8_sha}" --artifact-root "${CMAKE_SOURCE_DIR}/.local"
+    --output "${packed_uqsub8_generated}" --manifest "${packed_uqsub8_manifest}"
+  DEPENDS mh4u-aot-generator "${packed_uqsub8_fixture}"
+  VERBATIM)
+add_executable(mh4u-aot-runner-packed-uqsub8
+  "${CMAKE_SOURCE_DIR}/tools/aot/runner.cpp" "${packed_uqsub8_generated}")
+target_link_libraries(mh4u-aot-runner-packed-uqsub8 PRIVATE mh4u-aot-fixture)
+target_compile_options(mh4u-aot-runner-packed-uqsub8 PRIVATE -Wall -Wextra -Werror)
+add_test(NAME aot-packed-uqsub8-register-matrix COMMAND "${Python3_EXECUTABLE}"
+  "${CMAKE_SOURCE_DIR}/tests/aot/compare.py"
+  --jit "$<TARGET_FILE:mh4u-aot-jit-reference>"
+  --runner "$<TARGET_FILE:mh4u-aot-runner-packed-uqsub8>"
+  --fixture "${packed_uqsub8_fixture}" --matrix)
+
+set(mul_fixture "${CMAKE_SOURCE_DIR}/tests/aot/mul.fixture")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${mul_fixture}")
+file(SHA256 "${mul_fixture}" mul_sha)
+set(mul_generated "${MH4U_AOT_ARTIFACT_ROOT}/mul.cpp")
+set(mul_manifest "${MH4U_AOT_ARTIFACT_ROOT}/mul.json")
+add_custom_command(OUTPUT "${mul_generated}" "${mul_manifest}"
+  COMMAND "$<TARGET_FILE:mh4u-aot-generator>" --fixture "${mul_fixture}"
+    --input-sha256 "${mul_sha}" --artifact-root "${CMAKE_SOURCE_DIR}/.local"
+    --output "${mul_generated}" --manifest "${mul_manifest}"
+  DEPENDS mh4u-aot-generator "${mul_fixture}"
+  VERBATIM)
+add_executable(mh4u-aot-runner-mul
+  "${CMAKE_SOURCE_DIR}/tools/aot/runner.cpp" "${mul_generated}")
+target_link_libraries(mh4u-aot-runner-mul PRIVATE mh4u-aot-fixture)
+target_compile_options(mh4u-aot-runner-mul PRIVATE -Wall -Wextra -Werror)
+add_test(NAME aot-mul-register-matrix COMMAND "${Python3_EXECUTABLE}"
+  "${CMAKE_SOURCE_DIR}/tests/aot/compare.py"
+  --jit "$<TARGET_FILE:mh4u-aot-jit-reference>"
+  --runner "$<TARGET_FILE:mh4u-aot-runner-mul>"
+  --fixture "${mul_fixture}" --matrix)
+
 set(loop_fixture "${CMAKE_SOURCE_DIR}/tests/aot/loop.fixture")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${loop_fixture}")
 file(SHA256 "${loop_fixture}" loop_sha)

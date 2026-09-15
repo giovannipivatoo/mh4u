@@ -7,7 +7,9 @@ target_compile_options(mh4u-pica-metal PRIVATE -Wall -Wextra -Werror
 target_link_libraries(mh4u-pica-metal PUBLIC "-framework Foundation" "-framework Metal")
 
 add_library(mh4u-pica-metal-azahar-adapter STATIC
-  "${CMAKE_SOURCE_DIR}/src/pica_metal/azahar_adapter.cpp")
+  "${CMAKE_SOURCE_DIR}/src/pica_metal/azahar_adapter.cpp"
+  "${AZAHAR_SOURCE}/src/video_core/texture/texture_decode.cpp"
+  "${AZAHAR_SOURCE}/src/video_core/texture/etc1.cpp")
 target_include_directories(mh4u-pica-metal-azahar-adapter PRIVATE
   "${AZAHAR_SOURCE}/src" "${AZAHAR_SOURCE}/externals/fmt/include"
   "${AZAHAR_SOURCE}/externals/boost")
@@ -34,7 +36,8 @@ set_tests_properties(pica-metal-golden PROPERTIES
   SKIP_RETURN_CODE 77 TIMEOUT 30 RUN_SERIAL TRUE)
 
 add_executable(pica-metal-adapter-test
-  "${CMAKE_SOURCE_DIR}/tests/pica_metal/adapter.cpp")
+  "${CMAKE_SOURCE_DIR}/tests/pica_metal/adapter.cpp"
+  "${CMAKE_SOURCE_DIR}/tests/pica_metal/log_stub.cpp")
 target_include_directories(pica-metal-adapter-test PRIVATE
   "${AZAHAR_SOURCE}/src" "${AZAHAR_SOURCE}/externals/fmt/include"
   "${AZAHAR_SOURCE}/externals/boost")
@@ -45,8 +48,22 @@ add_test(NAME pica-metal-azahar-adapter COMMAND pica-metal-adapter-test)
 set_tests_properties(pica-metal-azahar-adapter PROPERTIES
   SKIP_RETURN_CODE 77 TIMEOUT 30 RUN_SERIAL TRUE)
 
+add_executable(pica-metal-texture-decode-test
+  "${CMAKE_SOURCE_DIR}/tests/pica_metal/texture_decode.cpp"
+  "${CMAKE_SOURCE_DIR}/tests/pica_metal/log_stub.cpp")
+target_include_directories(pica-metal-texture-decode-test PRIVATE
+  "${AZAHAR_SOURCE}/src" "${AZAHAR_SOURCE}/externals/fmt/include"
+  "${AZAHAR_SOURCE}/externals/boost")
+target_compile_options(pica-metal-texture-decode-test PRIVATE
+  -Wall -Wextra -Werror -Wno-unused-parameter)
+target_link_libraries(pica-metal-texture-decode-test PRIVATE
+  mh4u-pica-metal-azahar-adapter)
+add_test(NAME pica-metal-texture-decode COMMAND pica-metal-texture-decode-test)
+set_tests_properties(pica-metal-texture-decode PROPERTIES TIMEOUT 30)
+
 add_executable(pica-metal-trace-replay
-  "${CMAKE_SOURCE_DIR}/tools/pica_metal/replay.cpp")
+  "${CMAKE_SOURCE_DIR}/tools/pica_metal/replay.cpp"
+  "${CMAKE_SOURCE_DIR}/tests/pica_metal/log_stub.cpp")
 target_include_directories(pica-metal-trace-replay PRIVATE
   "${AZAHAR_SOURCE}/src" "${AZAHAR_SOURCE}/externals/fmt/include"
   "${AZAHAR_SOURCE}/externals/boost")

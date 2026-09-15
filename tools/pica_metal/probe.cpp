@@ -107,6 +107,19 @@ int main() {
     expect(tev.image, 32, 32, {157, 79, 39, 255},
            "RGBA8 texture sampling or accelerated TEV byte rounding is wrong");
 
+    const std::array<uint8_t, 8> linear_texels{1, 0, 0, 255, 2, 0, 0, 255};
+    const TextureRgba8 linear_texture{2, 1, 8, linear_texels, TextureFilter::Linear};
+    auto linear_state = state(size, size, {204.0f / 255.0f, 0, 0, 1}, 0.25f);
+    linear_state.tev[0].color_source[0] = TevSource::Texture0;
+    linear_state.tev[0].color_source[1] = TevSource::Constant;
+    linear_state.tev[0].color_operation = TevOperation::Modulate;
+    const std::array linear_draws{Draw{front_vertices, linear_state, &linear_texture}};
+    const RenderResult linear = renderer.render(
+        Frame{size, size, {0, 0, 0, 1}, 1.0f, 24, linear_draws});
+    if (!linear) fail(linear.message.c_str());
+    expect(linear.image, 32, 32, {1, 0, 0, 255},
+           "linear texture sample was byte-rounded before the TEV combiner");
+
     auto alpha_state = state(size, size, {0, 0, 1, 153.0f / 255.0f}, 0.5f);
     alpha_state.depth_compare = CompareFunc::Equal;
     alpha_state.depth_write_enable = false;
@@ -215,7 +228,8 @@ int main() {
               "\"scope\":\"post-PICA-vertex-output rasterization\","
               "\"draw_batches\":2,\"depth_retained\":true,"
               "\"texture0_rgba8\":true,\"tev_accelerated\":157,"
-              "\"tev_software_reference\":156,\"persistent_target\":true,"
+              "\"tev_software_reference\":156,\"linear_sample_float\":true,"
+              "\"persistent_target\":true,"
               "\"rgba8_import\":true,\"depth_stencil_snapshot\":true,"
               "\"game_integrated\":false}");
 }

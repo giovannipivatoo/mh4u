@@ -2,6 +2,15 @@
 
 ## Implementazione AOT + Metal in corso — 2026-09-15
 
+Checkpoint più recente: AOT dopo otto iterazioni offline, 18/18 test; aggiunti
+UQSUB8 e Mul32 con confronti differenziali. Grafo cap1024/fetch65536. Smoke fresco
+con identità verificata: MissingBlock PC0x104618 CPSR20000010 FPSCR03000000,
+318332 callback, cinque batch, nessun frame né timeout. Helper riproducibile PASS.
+Metal: decoder condiviso core/test per14 formati e campioni float fino al TEV;
+3/3 test GPU. Il core decodifica ETC1A4 512x256 e si ferma su Texture3 procedurale,
+sempre54 submission/52 video frame neri. Prossimi passi: ciclo offline AOT limitato
+e supporto proctex osservato. Le note sotto descrivono checkpoint precedenti.
+
 Ultimo avanzamento Metal: import/export depth-stencil implementato con blit Metal
 separati, D16/D24/D24S8 tiled guest e conversione quantizzata preservata. Target
 limitati a VRAM/FCRAM interamente cacheabili. Smoke reale fresco: 54/54 draw e

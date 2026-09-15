@@ -108,7 +108,8 @@ target, tracks cached guest pages and writes attachments back in PICA tiled form
 It reuses the software RAM presentation path, with CPU PICA vertex processing;
 there is no Vulkan rasterization fallback when Metal is selected. A fresh-state
 live run now submits 54 real game draws to Metal and produces 52 black video
-frames before rejecting a non-RGBA8 texture. This proves live GPU submission,
+frames. The next slice decodes the encountered ETC1A4 texture (512 × 256,
+131,072 encoded bytes) and stops on procedural Texture3. This proves live GPU submission,
 not a correct visible game screen or gameplay.
 
 A candidate crash was isolated to inconsistent `RendererSoftware` layout across
@@ -125,7 +126,7 @@ The next integration gates are:
    and memory operations. Unsupported code must stop an AOT-only run;
    a hybrid fallback, if introduced, must be named and counted separately.
 3. Add the graphics states encountered by the live core, including additional
-   texture formats, and compare complete frames against the reference.
+   procedural Texture3, and compare complete frames against the reference.
 4. Combine AOT and Metal once each backend advances independently, then validate
    finite game runs, ordinary saves and representative gameplay. Keep the working
    runtime as a reference and
@@ -133,3 +134,19 @@ The next integration gates are:
 
 There is no measured performance improvement or complete AOT/Metal game support
 claim at this stage.
+
+Latest bounded AOT coverage checkpoint: eight offline compile/run iterations,
+1,024-block graph cap and 65,536-fetch cap. Added UQSUB8 and low-word multiply,
+both checked against Dynarmic with differential edge matrices; the negative
+fixture still rejects a genuinely unsupported instruction without partial output.
+The final fresh-state run verifies instruction identity, executes five AOT batches
+and stops at missing descriptor PC `0x00104618`, CPSR `0x20000010`, FPSCR
+`0x03000000`, after 318,332 block callbacks. No timeout and no video frames;
+18 AOT tests pass. This is continued startup coverage, not a completed AOT boot.
+
+Texture decoding now accepts all 14 pinned PICA formats through a shared core/test
+boundary with exact input spans and separate 4 MiB encoded/decoded limits. Linear
+samples remain floating point until TEV stage quantization, verified with a golden
+case that distinguishes premature rounding. Three PICA tests pass on the GPU.
+The trace replay still rejects non-RGBA8 input; new-format evidence comes from
+the decoder tests and live core, not replayed traces.

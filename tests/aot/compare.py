@@ -38,7 +38,7 @@ def main() -> int:
             "--manifest", str(manifest),
         ], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         assert result.returncode != 0
-        assert "unsupported IR opcode at guest PC 0x1000: Mul32" in result.stderr
+        assert "unsupported IR opcode at guest PC 0x1000: SignExtendWordToLong" in result.stderr
         assert not output.exists() and not manifest.exists()
         return 0
     if args.manifest:

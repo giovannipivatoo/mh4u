@@ -308,6 +308,16 @@ private:
                 << Expr(inst.GetArg(0)) << " & ~static_cast<std::uint32_t>("
                 << Expr(inst.GetArg(1)) << ");\n";
             return;
+        case IR::Opcode::Mul32:
+            out << "  [[maybe_unused]] const std::uint32_t " << name
+                << " = static_cast<std::uint32_t>(" << Expr(inst.GetArg(0)) << " * "
+                << Expr(inst.GetArg(1)) << ");\n";
+            return;
+        case IR::Opcode::PackedSaturatedSubU8:
+            out << "  [[maybe_unused]] const std::uint32_t " << name
+                << " = PackedSaturatedSubU8(" << Expr(inst.GetArg(0)) << ", "
+                << Expr(inst.GetArg(1)) << ");\n";
+            return;
         case IR::Opcode::Add32:
         case IR::Opcode::Sub32:
             arithmetic[&inst] = true;

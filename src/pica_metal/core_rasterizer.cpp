@@ -5,7 +5,6 @@
 #include "core/memory.h"
 #include "video_core/pica/pica_core.h"
 #include "video_core/pica/regs_framebuffer.h"
-#include "video_core/texture/texture_decode.h"
 #include "video_core/utils.h"
 
 #include <algorithm>
@@ -20,7 +19,6 @@ namespace mh4u::pica_metal {
 namespace {
 
 constexpr uint64_t MaxSurfaceBytes = 16 * 1024 * 1024;
-constexpr uint64_t MaxTextureBytes = 4 * 1024 * 1024;
 
 struct TargetKey {
     PAddr color_address{};
@@ -64,6 +62,7 @@ struct CoreRasterizer::Impl {
     bool dirty_depth_stencil{};
     uint64_t metal_draws{};
     uint64_t submissions{};
+    bool logged_non_rgba_texture{};
     std::string fatal{};
 
     Impl(Memory::MemorySystem& memory_, Pica::PicaCore& pica_) : memory{memory_}, pica{pica_} {
@@ -348,24 +347,24 @@ void CoreRasterizer::AddTriangle(const Pica::OutputVertex& v0, const Pica::Outpu
 void CoreRasterizer::DrawTriangles() {
     if (!impl_->fatal.empty() || impl_->vertices.empty()) return;
     const auto& regs = impl_->pica.regs.internal;
-    if (!impl_->ensure_target(regs)) {
-        impl_->vertices.clear();
-        return;
-    }
-    std::vector<uint8_t> decoded_texture{};
+    AzaharTexture0 decoded_texture{};
     TextureRgba8 texture{};
     const TextureRgba8* texture_pointer = nullptr;
     if (regs.texturing.main_config.texture0_enable) {
         const auto& config = regs.texturing.texture0;
-        if (regs.texturing.texture0_format != Pica::TexturingRegs::TextureFormat::RGBA8 ||
-            config.width == 0 || config.height == 0 || config.width % 8 || config.height % 8 ||
-            static_cast<uint64_t>(config.width) * config.height * 4 > MaxTextureBytes) {
-            impl_->fail("core adapter supports only bounded tiled RGBA8 texture0");
+        const auto format = regs.texturing.texture0_format.Value();
+        const uint32_t format_value = static_cast<uint32_t>(format);
+        AzaharTextureLayout layout{};
+        const ValidationResult texture_layout = azahar_texture0_layout(regs, layout);
+        if (!texture_layout) {
+            impl_->fail("core adapter rejected texture0 format=" + std::to_string(format_value) +
+                        " dimensions=" + std::to_string(config.width.Value()) + "x" +
+                        std::to_string(config.height.Value()) + ": " + texture_layout.message);
             impl_->vertices.clear();
             return;
         }
         const PAddr address = config.GetPhysicalAddress();
-        const uint32_t size = config.width * config.height * 4;
+        const uint32_t size = layout.encoded_bytes;
         if (!fits_physical_address(address, size)) {
             impl_->fail("core adapter texture0 interval overflows physical address space");
             impl_->vertices.clear();
@@ -389,19 +388,23 @@ void CoreRasterizer::DrawTriangles() {
             impl_->vertices.clear();
             return;
         }
-        const auto info = Pica::Texture::TextureInfo::FromPicaRegister(
-            config, regs.texturing.texture0_format.Value());
-        decoded_texture.resize(static_cast<size_t>(config.width) * config.height * 4);
         const auto encoded = texture_ref.GetReadBytes<uint8_t>(size);
-        for (uint32_t y = 0; y < config.height; ++y) {
-            for (uint32_t x = 0; x < config.width; ++x) {
-                const auto value = Pica::Texture::LookupTexture(encoded.data(), x,
-                                                                config.height - 1 - y, info);
-                const size_t offset = (static_cast<size_t>(y) * config.width + x) * 4;
-                std::memcpy(decoded_texture.data() + offset, value.AsArray(), 4);
-            }
+        const ValidationResult decoded = decode_azahar_texture0(regs, encoded, decoded_texture);
+        if (!decoded) {
+            impl_->fail("core adapter failed texture0 decode: " + decoded.message);
+            impl_->vertices.clear();
+            return;
         }
-        texture = {config.width, config.height, config.width * 4, decoded_texture};
+        if (format != Pica::TexturingRegs::TextureFormat::RGBA8 &&
+            !impl_->logged_non_rgba_texture) {
+            impl_->logged_non_rgba_texture = true;
+            LOG_INFO(Render,
+                     "PICA Metal decoded texture0 format={} dimensions={}x{} encoded_bytes={} "
+                     "decoded_bytes={}",
+                     format_value, config.width.Value(), config.height.Value(),
+                     layout.encoded_bytes, layout.decoded_bytes);
+        }
+        texture = decoded_texture.view();
         texture_pointer = &texture;
     }
     AzaharDraw converted{};
@@ -412,6 +415,7 @@ void CoreRasterizer::DrawTriangles() {
         impl_->fail("core adapter rejected live PICA state: " + decoded.message);
         return;
     }
+    if (!impl_->ensure_target(regs)) return;
     const Draw draw = converted.view();
     ++impl_->submissions;
     const ValidationResult rendered = impl_->renderer.draw(*impl_->target, std::span{&draw, 1});

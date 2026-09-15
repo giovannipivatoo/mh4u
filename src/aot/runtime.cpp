@@ -71,6 +71,17 @@ AddResult32 RotateRightExtended(const std::uint32_t value, const bool carry) {
     return {result, Nz(result) | ((value & 1U) << 29)};
 }
 
+std::uint32_t PackedSaturatedSubU8(const std::uint32_t lhs, const std::uint32_t rhs) {
+    std::uint32_t result = 0;
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+        const auto a = static_cast<std::uint8_t>(lhs >> shift);
+        const auto b = static_cast<std::uint8_t>(rhs >> shift);
+        const std::uint32_t lane = a >= b ? static_cast<std::uint32_t>(a - b) : 0U;
+        result |= lane << shift;
+    }
+    return result;
+}
+
 bool ConditionPassed(const std::uint32_t cpsr, const std::uint8_t condition) {
     const bool n = (cpsr & 0x80000000U) != 0;
     const bool z = (cpsr & 0x40000000U) != 0;

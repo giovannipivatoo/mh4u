@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstdio>
+#include <vector>
 
 using namespace mh4u::pica_metal;
 
@@ -84,6 +85,23 @@ int main() {
         return 1;
     }
 
+    regs = registers();
+    regs.texturing.main_config.texture0_enable.Assign(1);
+    regs.texturing.texture0_format.Assign(Pica::TexturingRegs::TextureFormat::ETC1A4);
+    regs.texturing.texture0.width.Assign(8);
+    regs.texturing.texture0.height.Assign(8);
+    regs.texturing.texture0.type.Assign(Pica::TexturingRegs::TextureConfig::Texture2D);
+    std::vector<uint8_t> decoded_pixels(8 * 8 * 4, 255);
+    const TextureRgba8 decoded_texture{8, 8, 8 * 4, decoded_pixels};
+    const ValidationResult decoded_format =
+        decode_azahar_draw(regs, input, &decoded_texture, output);
+    if (!decoded_format || !output.texture0_enabled) {
+        std::fprintf(stderr, "adapter rejected decoded ETC1A4 texture0: %s\n",
+                     decoded_format.message.c_str());
+        return 1;
+    }
+
+    regs = registers();
     regs.framebuffer.output_merger.alphablend_enable.Assign(0);
     regs.framebuffer.output_merger.logic_op.Assign(Pica::FramebufferRegs::LogicOp::Xor);
     const ValidationResult rejected = decode_azahar_draw(regs, input, nullptr, output);

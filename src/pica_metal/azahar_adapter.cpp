@@ -2,6 +2,9 @@
 
 #include "video_core/pica/output_vertex.h"
 #include "video_core/pica/regs_internal.h"
+#include "video_core/texture/texture_decode.h"
+
+#include <cstring>
 
 namespace mh4u::pica_metal {
 namespace {
@@ -97,6 +100,49 @@ bool wrap(Pica::TexturingRegs::TextureConfig::WrapMode value, WrapMode& result) 
 
 } // namespace
 
+ValidationResult azahar_texture0_layout(const Pica::RegsInternal& regs,
+                                        AzaharTextureLayout& output) {
+    constexpr uint64_t MaxTextureBytes = 4 * 1024 * 1024;
+    const auto& config = regs.texturing.texture0;
+    const auto format = regs.texturing.texture0_format.Value();
+    const uint32_t format_value = static_cast<uint32_t>(format);
+    const uint64_t decoded_bytes = static_cast<uint64_t>(config.width) * config.height * 4;
+    if (format_value > static_cast<uint32_t>(Pica::TexturingRegs::TextureFormat::ETC1A4) ||
+        config.width == 0 || config.height == 0 || config.width % 8 || config.height % 8 ||
+        config.type != Pica::TexturingRegs::TextureConfig::Texture2D || config.lod.max_level != 0)
+        return {Error::UnsupportedState, "PICA texture0 layout is unsupported"};
+    const uint64_t encoded_bytes = Pica::Texture::CalculateTileSize(format) *
+                                   static_cast<uint64_t>(config.width / 8) *
+                                   static_cast<uint64_t>(config.height / 8);
+    if (!encoded_bytes || encoded_bytes > MaxTextureBytes || decoded_bytes > MaxTextureBytes)
+        return {Error::UnsupportedState, "PICA texture0 exceeds the 4 MiB decode bounds"};
+    output = {static_cast<uint32_t>(encoded_bytes), static_cast<uint32_t>(decoded_bytes)};
+    return {};
+}
+
+ValidationResult decode_azahar_texture0(const Pica::RegsInternal& regs,
+                                        std::span<const uint8_t> encoded,
+                                        AzaharTexture0& output) {
+    AzaharTextureLayout layout{};
+    const ValidationResult valid = azahar_texture0_layout(regs, layout);
+    if (!valid) return valid;
+    if (encoded.size() != layout.encoded_bytes)
+        return {Error::InvalidDraw, "PICA texture0 encoded span has the wrong size"};
+    const auto& config = regs.texturing.texture0;
+    const auto info = Pica::Texture::TextureInfo::FromPicaRegister(
+        config, regs.texturing.texture0_format.Value());
+    output = {config.width, config.height, std::vector<uint8_t>(layout.decoded_bytes)};
+    for (uint32_t y = 0; y < config.height; ++y) {
+        for (uint32_t x = 0; x < config.width; ++x) {
+            const auto value = Pica::Texture::LookupTexture(encoded.data(), x,
+                                                            config.height - 1 - y, info);
+            const size_t offset = (static_cast<size_t>(y) * config.width + x) * 4;
+            std::memcpy(output.rgba8.data() + offset, value.AsArray(), 4);
+        }
+    }
+    return {};
+}
+
 ValidationResult decode_azahar_draw(const Pica::RegsInternal& regs,
                                     std::span<const Pica::OutputVertex> vertices,
                                     const TextureRgba8* texture0, AzaharDraw& output) {
@@ -131,8 +177,10 @@ ValidationResult decode_azahar_draw(const Pica::RegsInternal& regs,
         return unsupported("PICA custom clipping plane is not implemented");
     if (regs.rasterizer.depthmap_enable == Pica::RasterizerRegs::WBuffering)
         return unsupported("PICA W-buffering is not implemented");
-    if (regs.texturing.fragment_lighting_enable || regs.texturing.main_config.texture3_enable)
-        return unsupported("PICA lighting and procedural textures are not implemented");
+    if (regs.texturing.fragment_lighting_enable)
+        return unsupported("PICA fragment lighting is not implemented");
+    if (regs.texturing.main_config.texture3_enable)
+        return unsupported("PICA procedural texture3 is not implemented");
     if (regs.texturing.fog_mode != Texturing::FogMode::None)
         return unsupported("PICA fog and gas are not implemented");
     if (regs.texturing.main_config.texture1_enable || regs.texturing.main_config.texture2_enable)
@@ -263,9 +311,10 @@ ValidationResult decode_azahar_draw(const Pica::RegsInternal& regs,
     if (regs.texturing.main_config.texture0_enable) {
         const auto& config = regs.texturing.texture0;
         if (!texture0) return {Error::InvalidDraw, "enabled PICA texture0 has no decoded pixels"};
-        if (regs.texturing.texture0_format != Texturing::TextureFormat::RGBA8 ||
+        if (static_cast<uint32_t>(regs.texturing.texture0_format.Value()) >
+                static_cast<uint32_t>(Texturing::TextureFormat::ETC1A4) ||
             config.type != Texturing::TextureConfig::Texture2D || config.lod.max_level != 0)
-            return unsupported("PICA Metal first slice supports only non-mipmapped RGBA8 texture2D");
+            return unsupported("PICA Metal first slice supports only non-mipmapped texture2D");
         output.texture0 = *texture0;
         output.texture0_enabled = true;
         if (config.min_filter != config.mag_filter || !wrap(config.wrap_s, output.texture0.wrap_s) ||
