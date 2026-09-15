@@ -216,13 +216,15 @@ A combined build and fresh-state missing-block smoke can check linking, backend
 selection and bounded shutdown now. Since AOT still stops before video, such a
 result cannot demonstrate CPU/GPU cooperation on rendered game frames.
 
-Build the verified combined checkpoint using the local iteration08 artifact:
+Build the combined checkpoint using the verified local hot-preservation iteration02
+artifact (152 mandatory entry descriptors, 1024 blocks):
 
 ```sh
-python3 tools/aot/build_combined_core.py --jobs 8
+python3 tools/aot/build_combined_core.py \
+  --source .local/aot-metal-final-source --build .local/aot-metal-final-build --jobs 8
 python3 tools/aot/core_smoke.py --require-aot-metal \
   --host build/mh4u-runtime \
-  --core .local/aot-metal-combined-core-build/bin/Release/azahar_libretro.dylib \
+  --core .local/aot-metal-final-build/bin/Release/azahar_libretro.dylib \
   --game .local/game/main.cxi \
   --state-dir .local/aot-metal-check/state --frames 300 --timeout 20
 ```
@@ -230,8 +232,9 @@ python3 tools/aot/core_smoke.py --require-aot-metal \
 The helper requires fresh source/build paths and pins the verified artifact and
 manifest hashes. The actual combined build and fresh smoke pass: both backend
 banners and instruction identity are verified, the core returns exactly 1 on
-missing PC `0x00104614`, and no timeout or video frames occur. Core SHA-256 is
-`277964a6e2fef6b984fc5b7d1f41d439210ee07dee7ffdeb413a9b795e609ad9`;
+missing PC `0x00104664`, and no timeout or video frames occur. It records 167
+executed descriptors and complete sets for all four guest cores. Core SHA-256 is
+`ef4045f334edc1299c52da174e5e49e36bcaf236ea2aaee30f13cd394064afa1`;
 build provenance and smoke agree. This establishes the combined path, not a
 completed AOT boot or a game frame rendered with AOT execution.
 
@@ -286,3 +289,28 @@ observed. The 21 AOT CTests pass, including 23 parser/decision unit cases.
 The final report is `.local/aot-hot-preservation-final-20260915/offline-expansion.json`.
 The older interrupted `.local/aot-hot-batch-20260915` is retained as incomplete
 evidence and must not be used as the final result.
+
+## DOT3 alpha validation checkpoint
+
+The validator now permits the otherwise invalid alpha DOT3 operation when the
+color operation is DOT3_RGBA: the color result supplies alpha, so that alpha
+operation is inert. GPU readback verifies this case; a negative test retains the
+rejection for an active alpha DOT3 and checks stage/operation diagnostics.
+The full candidate suite passes 43/43 CTests, including input, device and GPU tests.
+
+A fresh New Game replay requests 2850 frames but stops at 2706 with 122627 Metal
+draws/submissions. The previous alpha DOT3 rejection is gone; the next fatal
+condition is `PICA TEV references an unsupported source or modifier`. The process
+returns zero, but `frame_limit_reached=false` and the fatal log make this an
+incomplete run. Its capture still shows the main menu with New Game selected,
+not character creation. This remains a JIT CPU test. The tested Metal core hash is
+`67b43792b9040232277b108d1173656c8126b75d4fe1c142c1dadcf9315401d5`;
+local evidence is `.local/pica-metal-dot3-new-game-20260915/`.
+
+The remaining generic adapter error does not identify the rejected field. The
+next diagnostic must record stage, color/alpha channel, source/modifier kind,
+slot, raw value and both operations. Read-only comparison with the pinned shader
+configuration confirms that DOT3_RGBA also ignores alpha sources and modifiers;
+it does not prove that these caused this run's rejection. Active fragment-lighting
+colors or Texture1/2 remain other possible causes. Do not bypass an unknown active
+source or claim support without identifying and testing the actual state.

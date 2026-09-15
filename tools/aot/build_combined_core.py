@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build one fail-closed Azahar core with the experimental AOT and Metal adapters."""
+"""Build one fail-closed Azahar core with the preserved-hot AOT and Metal adapters."""
 
 import argparse
 import hashlib
@@ -14,15 +14,15 @@ LOCAL = (ROOT / ".local").resolve()
 EXPORT = ROOT / ".local/azahar-src"
 DEFAULT_SOURCE = ROOT / ".local/aot-metal-combined-core-source"
 DEFAULT_BUILD = ROOT / ".local/aot-metal-combined-core-build"
-DEFAULT_ARTIFACT = ROOT / ".local/aot-offline-batch-20260915-r2/iteration-08/title.cpp"
-DEFAULT_MANIFEST = ROOT / ".local/aot-offline-batch-20260915-r2/iteration-08/title.json"
+DEFAULT_ARTIFACT = ROOT / ".local/aot-hot-preservation-final-20260915/iteration-02/title.cpp"
+DEFAULT_MANIFEST = ROOT / ".local/aot-hot-preservation-final-20260915/iteration-02/title.json"
 PATCH = ROOT / "patches/experimental-aot-metal-core-adapter.patch"
 CORE_PROVENANCE = ROOT / ".local/core-provenance.json"
 EXCLUDED_KEY_HEADER = "src/core/hw/default_keys.h"
 AZAHAR_COMMIT = "26e608f6fa292b27cda0ae8c84e148d17600a5e6"
 TITLE_CODE_SHA256 = "63940d7ef1fecc119f9fb820f5f6a2cf2f2a5549e4a70f00319fbd6c9c1ad8dc"
-ARTIFACT_SHA256 = "38c61f221e6676bbde017cb8ae2b323e8cec4905191582acbf6318a4049dd204"
-MANIFEST_SHA256 = "4dfcf60cab3a4988fb65ffe5e521bd366ed0f5665f2e75f7c782a618b8c8441a"
+ARTIFACT_SHA256 = "91e417c95f31996baebe7a777bbc8ee523532366c641f3549e8109c4e9726418"
+MANIFEST_SHA256 = "8801d71a04e5fd8d4ad0a4317e9d2c3a9569506632cdfad2f1700e407ba43c78"
 
 
 def sha256(path: Path) -> str:
@@ -49,12 +49,12 @@ def verify_inputs(artifact: Path, manifest_path: Path) -> tuple[dict, dict]:
     if not (EXPORT / "CMakeLists.txt").is_file() or (EXPORT / EXCLUDED_KEY_HEADER).exists():
         raise RuntimeError("local Azahar export is missing or contains the excluded key header")
     if sha256(artifact) != ARTIFACT_SHA256 or sha256(manifest_path) != MANIFEST_SHA256:
-        raise RuntimeError("combined build requires the verified iteration-08 AOT artifact")
+        raise RuntimeError("combined build requires the verified hot-preservation iteration-02 artifact")
     manifest = json.loads(manifest_path.read_text())
     expected = {
         "input_sha256": TITLE_CODE_SHA256,
         "architecture": "ARMv6K",
-        "entry_descriptor_count": 17,
+        "entry_descriptor_count": 152,
         "block_count": 1024,
         "max_blocks": 1024,
         "max_guest_instruction_fetches": 65536,
@@ -63,7 +63,7 @@ def verify_inputs(artifact: Path, manifest_path: Path) -> tuple[dict, dict]:
     }
     for name, value in expected.items():
         if type(manifest.get(name)) is not type(value) or manifest.get(name) != value:
-            raise RuntimeError(f"iteration-08 manifest has unexpected {name}")
+            raise RuntimeError(f"hot-preservation iteration-02 manifest has unexpected {name}")
     return provenance, manifest
 
 

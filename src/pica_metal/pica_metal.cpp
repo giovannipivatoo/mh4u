@@ -94,7 +94,8 @@ ValidationResult validate(const Frame& frame) {
 
     bool texture0_used = false;
     bool procedural_texture_used = false;
-    for (const auto& stage : state.tev) {
+    for (size_t stage_index = 0; stage_index < state.tev.size(); ++stage_index) {
+        const auto& stage = state.tev[stage_index];
         if ((stage.color_multiplier != 1 && stage.color_multiplier != 2 &&
              stage.color_multiplier != 4) ||
             (stage.alpha_multiplier != 1 && stage.alpha_multiplier != 2 &&
@@ -103,9 +104,15 @@ ValidationResult validate(const Frame& frame) {
         if (!in_range(stage.color_operation, TevOperation::AddThenMultiply) ||
             !in_range(stage.alpha_operation, TevOperation::AddThenMultiply))
             return {Error::InvalidDraw, "PICA TEV operation is outside the supported range"};
-        if (stage.alpha_operation == TevOperation::Dot3Rgb ||
-            stage.alpha_operation == TevOperation::Dot3Rgba)
-            return {Error::InvalidDraw, "PICA dot3 is not valid for the alpha combiner"};
+        if ((stage.alpha_operation == TevOperation::Dot3Rgb ||
+             stage.alpha_operation == TevOperation::Dot3Rgba) &&
+            stage.color_operation != TevOperation::Dot3Rgba)
+            return {Error::InvalidDraw,
+                    "PICA dot3 is not valid for the alpha combiner: stage=" +
+                        std::to_string(stage_index) + " color_op=" +
+                        std::to_string(static_cast<uint32_t>(stage.color_operation)) +
+                        " alpha_op=" +
+                        std::to_string(static_cast<uint32_t>(stage.alpha_operation))};
         if (!finite(stage.constant))
             return {Error::InvalidDraw, "PICA TEV constant is invalid"};
         for (const auto source : stage.color_source)

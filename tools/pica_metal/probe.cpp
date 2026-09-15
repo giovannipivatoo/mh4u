@@ -185,6 +185,27 @@ int main() {
     expect(equal.image, 32, 32, {0, 0, 255, 153},
            "D16 clear quantization or accelerated stage-zero alpha Previous mapping is wrong");
 
+    auto dot3_rgba_state = state(size, size, {1, 0.5f, 0.5f, 0}, 0.25f);
+    dot3_rgba_state.tev[0].color_operation = TevOperation::Dot3Rgba;
+    dot3_rgba_state.tev[0].alpha_operation = TevOperation::Dot3Rgb;
+    const std::array dot3_rgba_draws{Draw{front_vertices, dot3_rgba_state, nullptr}};
+    const RenderResult dot3_rgba = renderer.render(
+        Frame{size, size, {0, 0, 0, 0}, 1.0f, 24, dot3_rgba_draws});
+    if (!dot3_rgba) fail(dot3_rgba.message.c_str());
+    expect(dot3_rgba.image, 32, 32, {255, 255, 255, 255},
+           "Dot3_RGBA color did not override the inert alpha dot3 operation");
+
+    auto invalid_alpha_dot3_state = front_state;
+    invalid_alpha_dot3_state.tev[0].alpha_operation = TevOperation::Dot3Rgba;
+    const std::array invalid_alpha_dot3_draws{
+        Draw{front_vertices, invalid_alpha_dot3_state, nullptr}};
+    const ValidationResult invalid_alpha_dot3 = validate(
+        Frame{size, size, {}, 1.0f, 24, invalid_alpha_dot3_draws});
+    if (invalid_alpha_dot3.error != Error::InvalidDraw ||
+        invalid_alpha_dot3.message.find("stage=0 color_op=0 alpha_op=7") ==
+            std::string::npos)
+        fail("alpha dot3 without color Dot3_RGBA did not fail closed with TEV diagnostics");
+
     auto unsupported_state = front_state;
     unsupported_state.depth_mode = DepthMode::WBuffering;
     const std::array unsupported_draws{Draw{front_vertices, unsupported_state, nullptr}};

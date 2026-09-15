@@ -1,6 +1,49 @@
 # Ripresa del progetto MH4U
 
-## Implementazione AOT + Metal in corso — 2026-09-15
+## Checkpoint AOT + Metal verificato — 2026-09-15
+
+Branch `feat/apple-silicon-aot-metal`. Implementazione Sol, revisione Astra senza
+finding sul diff finale. Suite completa `.local/aot-metal-candidate`: 43/43 CTest
+PASS, inclusi input, device e GPU. Dettagli e comandi in `docs/aot-metal.md`.
+
+Core combinato ricompilato da export fresco con AOT e Metal ON, keyblob/Vulkan/GL
+OFF: `.local/aot-metal-final-build`, provenance hash sorgenti verificati. Helper
+`tools/aot/build_combined_core.py` ora fissa artifact hot-preservation iteration02,
+152 entry mandatory / 1024 blocchi. Dylib SHA256:
+`ef4045f334edc1299c52da174e5e49e36bcaf236ea2aaee30f13cd394064afa1`.
+Smoke fresco `.local/aot-metal-final-smoke`: entrambi backend attivi, identità
+istruzioni verificata, 167 descriptor eseguiti, tutti quattro core presenti nella
+telemetria. Exit1 atteso su MissingBlock `0x00104664` / FPSCR03000000, zero frame,
+nessun timeout né fallback. Non è ancora boot AOT o rendering del gioco con AOT.
+
+Preservazione AOT già verificata in due cicli reali: tutti i descriptor osservati
+diventano mandatory prima della BFS; nessuna espulsione, cap1024 invariato, stop
+se superato. Secondo ciclo 152 mandatory emessi, 167 hot, 17 pending. Evidenza
+`.local/aot-hot-preservation-final-20260915/offline-expansion.json`; il precedente
+`.local/aot-hot-batch-20260915` è interrotto e NON costituisce evidenza finale.
+
+Metal: correzione validazione alpha DOT3 quando il colore è DOT3_RGBA, coerente
+con generatori pinned; test readback positivo e negativo PASS. Repro NewGame
+fresco `.local/pica-metal-dot3-new-game-20260915`: 2706/2850 frame, 122627 draw e
+submission, poi fatal `PICA TEV references an unsupported source or modifier`.
+Exit0 ma frame_limit_reached=false: NON considerarlo smoke completato. Cattura
+ancora Main Menu / New Game, non Character Creation. Core Metal separato SHA:
+`67b43792b9040232277b108d1173656c8126b75d4fe1c142c1dadcf9315401d5`.
+Il precedente replay2700 raggiunge il menu principale (133s contro9.9s Vulkan),
+con CPU JIT. Nessuna prova gameplay con Metal diretto, vertex processing CPU.
+
+Prossimo intervento Metal: aggiungere al reject adapter stage/channel/kind/slot,
+raw source/modifier e color/alpha op, poi repro finito su stato fresco. La diagnosi
+read-only trova alpha sources/modifiers inerti sotto DOT3_RGBA nel pinned, ma il
+log attuale NON prova che causino il reject: possibili source attivi non supportati
+(fragment lighting o Texture1/2). Non bypassare sorgenti attive sconosciute.
+Prossimo AOT: espandere offline il set pending conservando i descriptor già eseguiti.
+
+Sorgenti agenti congelati; nessuna installazione app o modifica ai salvataggi
+canonici. Artefatti e test solo `.local/`. Le sezioni seguenti sono STORICHE: i loro
+“in corso”, hash, test count e prossimi passi non sostituiscono questo checkpoint.
+
+## Cronologia implementazione AOT + Metal
 
 Preservazione AOT conclusa: set per ogni core solo a ingresso con budget positivo;
 parser rigido richiede tutti quattro core, binding hash input/source/manifest/core,
