@@ -16,9 +16,16 @@ struct alignas(16) GpuVertex {
     std::array<float, 4> position;
     std::array<float, 4> color;
     std::array<float, 2> uv;
-    std::array<float, 2> padding{};
+    std::array<float, 2> uv2;
 };
 static_assert(sizeof(GpuVertex) == 48);
+
+struct alignas(16) GpuProceduralTexture {
+    std::array<Float2, 128> color_map{};
+    std::array<Float4, 256> color{};
+    std::array<Float4, 256> color_difference{};
+};
+static_assert(sizeof(GpuProceduralTexture) == 9216);
 
 struct alignas(16) GpuTevStage {
     std::array<uint32_t, 4> color_source{};
@@ -42,8 +49,8 @@ constexpr const char* shader_source = R"MSL(
 #include <metal_stdlib>
 using namespace metal;
 
-struct VertexIn { float4 position; float4 color; float2 uv; float2 padding; };
-struct VertexOut { float4 position [[position]]; float4 color; float2 uv; };
+struct VertexIn { float4 position; float4 color; float2 uv; float2 uv2; };
+struct VertexOut { float4 position [[position]]; float4 color; float2 uv; float2 uv2; };
 struct TevStage {
     uint4 color_source;
     uint4 alpha_source;
@@ -59,6 +66,11 @@ struct FragmentState {
     float4 depth;
     uint4 alpha;
 };
+struct ProceduralTextureState {
+    float2 color_map[128];
+    float4 color[256];
+    float4 color_difference[256];
+};
 struct FragmentOut { float4 color [[color(0)]]; float depth [[depth(any)]]; };
 
 vertex VertexOut pica_vertex(const device VertexIn* vertices [[buffer(0)]],
@@ -69,19 +81,37 @@ vertex VertexOut pica_vertex(const device VertexIn* vertices [[buffer(0)]],
                           -v.position.z, v.position.w);
     out.color = v.color;
     out.uv = v.uv;
+    out.uv2 = v.uv2;
     return out;
 }
 
-float4 source_value(uint source, float4 primary, float4 texture0, uint4 previous_buffer,
-                    uint4 constant_color, uint4 previous) {
+float4 source_value(uint source, float4 primary, float4 texture0, float4 procedural_texture,
+                    uint4 previous_buffer, uint4 constant_color, uint4 previous) {
     switch (source) {
     case 0: return primary;
     case 1: return texture0;
     case 2: return float4(previous_buffer) / 255.0;
     case 3: return float4(constant_color) / 255.0;
     case 4: return float4(previous) / 255.0;
+    case 5: return procedural_texture;
     default: return 0.0;
     }
+}
+
+float procedural_lookup(constant ProceduralTextureState& state, float coord) {
+    coord *= 128.0;
+    const float index = clamp(floor(coord), 0.0, 127.0);
+    const float fraction = coord - index;
+    const float2 entry = state.color_map[uint(index)];
+    return clamp(entry.x + entry.y * fraction, 0.0, 1.0);
+}
+
+float4 sample_procedural_texture(constant ProceduralTextureState& state, float2 coordinate) {
+    const float u = min(abs(coordinate.x), 1.0);
+    const float mapped = procedural_lookup(state, u);
+    const float index = mapped * 127.0;
+    const uint integer = uint(index);
+    return state.color[integer] + (index - float(integer)) * state.color_difference[integer];
 }
 
 float3 modify_color(float4 value, uint modifier) {
@@ -159,11 +189,13 @@ bool compare_u8(uint value, uint reference, uint func) {
 
 fragment FragmentOut pica_fragment(VertexOut in [[stage_in]],
                                     constant FragmentState& state [[buffer(0)]],
+                                    constant ProceduralTextureState& procedural [[buffer(1)]],
                                     texture2d<float> texture0 [[texture(0)]],
                                     sampler texture0_sampler [[sampler(0)]]) {
     const float4 primary =
         float4(uint4(clamp(in.color, 0.0, 1.0) * 255.0 + 0.5)) / 255.0;
     const float4 sampled = texture0.sample(texture0_sampler, in.uv);
+    const float4 procedural_sample = sample_procedural_texture(procedural, in.uv2);
     uint4 previous_buffer = 0;
     uint4 next_buffer = state.initial_buffer;
     uint4 previous = 0;
@@ -179,9 +211,11 @@ fragment FragmentOut pica_fragment(VertexOut in [[stage_in]],
                 i == 0 && stage.alpha_source[j] == 4 ? stage.alpha_source[2]
                                                      : stage.alpha_source[j];
             color_arg[j] = modify_color(source_value(color_source, primary, sampled,
+                                                      procedural_sample,
                                                       previous_buffer, stage.constant_color, previous),
                                         stage.color_modifier[j]);
             alpha_arg[j] = modify_alpha(source_value(alpha_source, primary, sampled,
+                                                      procedural_sample,
                                                       previous_buffer, stage.constant_color, previous),
                                         stage.alpha_modifier[j]);
         }
@@ -604,13 +638,23 @@ ValidationResult Renderer::draw(Target& target, std::span<const Draw> draws) {
                                      vertex.clip_position.z, vertex.clip_position.w},
                                     {vertex.primary_color.x, vertex.primary_color.y,
                                      vertex.primary_color.z, vertex.primary_color.w},
-                                    {vertex.texcoord0.x, vertex.texcoord0.y}});
+                                    {vertex.texcoord0.x, vertex.texcoord0.y},
+                                    {vertex.texcoord2.x, vertex.texcoord2.y}});
             const GpuFragmentState fragment = gpu_state(state, target.impl_->depth_bits);
+            GpuProceduralTexture procedural{};
+            if (draw.procedural_texture) {
+                procedural.color_map = draw.procedural_texture->color_map;
+                procedural.color = draw.procedural_texture->color;
+                procedural.color_difference = draw.procedural_texture->color_difference;
+            }
             id<MTLBuffer> vertex_buffer = [impl_->device
                 newBufferWithBytes:vertices.data() length:vertices.size() * sizeof(GpuVertex)
                             options:MTLResourceStorageModeShared];
             id<MTLBuffer> fragment_buffer = [impl_->device
                 newBufferWithBytes:&fragment length:sizeof(fragment)
+                            options:MTLResourceStorageModeShared];
+            id<MTLBuffer> procedural_buffer = [impl_->device
+                newBufferWithBytes:&procedural length:sizeof(procedural)
                             options:MTLResourceStorageModeShared];
             const TextureRgba8* source_texture = draw.texture0;
             MTLTextureDescriptor* texture_descriptor = [MTLTextureDescriptor
@@ -654,7 +698,7 @@ ValidationResult Renderer::draw(Target& target, std::span<const Draw> draws) {
             }
             id<MTLDepthStencilState> depth_state =
                 [impl_->device newDepthStencilStateWithDescriptor:depth_descriptor];
-            if (!pipeline || !vertex_buffer || !fragment_buffer || !texture || !sampler ||
+            if (!pipeline || !vertex_buffer || !fragment_buffer || !procedural_buffer || !texture || !sampler ||
                 !depth_state) {
                 [encoder endEncoding];
                 return {pipeline ? Error::MetalUnavailable : Error::ShaderCompilation,
@@ -680,12 +724,13 @@ ValidationResult Renderer::draw(Target& target, std::span<const Draw> draws) {
                                                : MTLWindingCounterClockwise];
             [encoder setCullMode:state.cull_mode == CullMode::KeepAll
                                      ? MTLCullModeNone
-                                     : (state.flip_viewport_y ? MTLCullModeFront
+                                     : (state.invert_ndc_y ? MTLCullModeFront
                                                               : MTLCullModeBack)];
-            const uint32_t flip = state.flip_viewport_y;
+            const uint32_t flip = state.invert_ndc_y;
             [encoder setVertexBuffer:vertex_buffer offset:0 atIndex:0];
             [encoder setVertexBytes:&flip length:sizeof(flip) atIndex:1];
             [encoder setFragmentBuffer:fragment_buffer offset:0 atIndex:0];
+            [encoder setFragmentBuffer:procedural_buffer offset:0 atIndex:1];
             [encoder setFragmentTexture:texture atIndex:0];
             [encoder setFragmentSamplerState:sampler atIndex:0];
             [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0

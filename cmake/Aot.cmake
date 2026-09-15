@@ -325,6 +325,9 @@ add_test(NAME aot-unsupported-fails-closed COMMAND "${Python3_EXECUTABLE}"
   --generator "$<TARGET_FILE:mh4u-aot-generator>" --fixture "${unsupported_fixture}"
   --input-sha256 "${unsupported_sha}" --artifact-root "${MH4U_AOT_ARTIFACT_ROOT}")
 
+add_test(NAME aot-offline-expansion-decisions COMMAND "${Python3_EXECUTABLE}"
+  "${CMAKE_SOURCE_DIR}/tests/aot/expand_core_graph_test.py")
+
 set(MH4U_TITLE_CODE "${CMAKE_SOURCE_DIR}/.local/game/exefs/code.bin")
 set(MH4U_TITLE_CODE_SHA256 "63940d7ef1fecc119f9fb820f5f6a2cf2f2a5549e4a70f00319fbd6c9c1ad8dc")
 if(EXISTS "${MH4U_TITLE_CODE}")

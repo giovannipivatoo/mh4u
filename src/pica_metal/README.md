@@ -9,9 +9,11 @@ borrowed C++ data.
 The conversion matches the pinned accelerated renderer:
 
 - PICA float24 vertex outputs are expanded to float32 by the adapter.
-- Clip position becomes `(x, flip ? -y : y, -z, w)`, matching Azahar's trivial
-  vertex shader. The adapter derives the viewport from the PICA half-size and
-  corner registers; Metal receives its top-left target coordinates.
+- Clip position becomes `(x, -y, -z, w)`. The unconditional Y inversion
+  compensates for Metal's positive viewport mapping NDC +1 to its top row, so
+  target row Y matches PICA screen Y `(ndc_y + 1) * half_height + corner_y`.
+  The adapter passes the PICA viewport corner and include-scissor coordinates
+  directly in that target coordinate system.
 - The fragment shader reconstructs PICA `z/w` as `-[[position]].z`, applies the
   float24-expanded depth range and offset, clamps to `[0,1]`, and truncates to
   D16 or D24 before the Metal depth test. Clear depth uses the same truncation.
@@ -25,11 +27,15 @@ The conversion matches the pinned accelerated renderer:
 
 The first slice supports triangle lists, RGBA8 color, all fourteen tiled PICA
 texture0 formats decoded by the pinned core (including ETC1/ETC1A4), 2D sampling,
-TEV, alpha test, culling, include scissor, Z buffering, D16/D24/D24S8 depth and
-stencil tests/writes and the PICA fixed-function blend equations and factors. It
-fails closed on exclude scissor, partial color masks, non-copy logic operations,
-W buffering, lighting, fog, procedural textures, mipmaps, other texture units,
-shadow/gas modes, and custom clipping planes.
+the observed procedural texture3 profile (perspective-correct `tc2`, clamp to
+edge, U color map, linear level-0 LUT width 128), TEV, alpha test, culling,
+include scissor, Z buffering, D16/D24/D24S8 depth and stencil tests/writes and
+the PICA fixed-function blend equations and factors. Procedural LUT values and
+signed differences are copied from the live PICA core and remain floating point
+until the TEV stage rounds its result. It fails closed on exclude scissor,
+partial color masks, non-copy logic operations, W buffering, lighting, fog,
+other procedural modes, mipmaps, TEV reads from texture units 1/2, shadow/gas
+modes, and custom clipping planes. Inert texture1/2 enable bits are ignored.
 
 `Frame` keeps color and depth across ordered `DrawTriangles` batches. The lower
 level `Target` API also keeps an owned Metal color/depth-stencil target across
@@ -59,12 +65,15 @@ state is sticky. The candidate integration logs `metal_draws`, Metal
 `submissions`, and its stop reason, then terminates the libretro run instead of
 falling back to software rasterization.
 
-The current real-game smoke reached 54 Metal draw submissions, decoded a coherent
-512x256 ETC1A4 texture (128 KiB encoded, 512 KiB RGBA), then rejected live
-procedural texture3 state and stopped. The headless presenter reported 52 black
-video frames. This proves the live CPU-vertex-to-Metal seam, depth/stencil target
-lifecycle, and compressed texture decode path, not gameplay. A usable core
-renderer still needs more target formats and aliases, coherent multi-target
-lifetime, the real transfer/fill paths, procedural texturing and lighting. Vertex
-shader execution remains in the PICA core until a separate PICA shader-ISA
-translation path is implemented.
+The current fresh-state real-game smoke completed its finite 300-frame run with
+8,167 Metal draw submissions. It decoded a coherent 512x256 ETC1A4 texture
+(128 KiB encoded, 512 KiB RGBA), consumed the live procedural texture3 profile,
+and stopped normally. The headless presenter reported 300 video frames, 245 with
+nonzero RGB, and zero presentations. Its captured final frame has readable boot
+text with the same orientation and placement as the Vulkan reference. This
+proves sustained live CPU-vertex-to-Metal rendering through the boot sequence;
+boot frames are not gameplay. A usable core renderer still needs more target
+formats and aliases, coherent multi-target lifetime, the real transfer/fill
+paths, more procedural texture modes and lighting. Vertex shader execution
+remains in the PICA core until a separate PICA shader-ISA translation path is
+implemented.

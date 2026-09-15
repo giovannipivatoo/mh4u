@@ -20,12 +20,12 @@ bool in_range(Enum value, Enum last) {
     return static_cast<uint32_t>(value) <= static_cast<uint32_t>(last);
 }
 
-bool uses_texture(const TevStage& stage) {
+bool uses_source(const TevStage& stage, TevSource wanted) {
     for (const auto source : stage.color_source) {
-        if (source == TevSource::Texture0) return true;
+        if (source == wanted) return true;
     }
     for (const auto source : stage.alpha_source) {
-        if (source == TevSource::Texture0) return true;
+        if (source == wanted) return true;
     }
     return false;
 }
@@ -87,11 +87,13 @@ ValidationResult validate(const Frame& frame) {
             return {Error::InvalidDraw, "PICA stencil test requires a stencil target"};
         for (const auto& vertex : draw.vertices) {
             if (!finite(vertex.clip_position) || !finite(vertex.primary_color) ||
-                !finite(vertex.texcoord0) || vertex.clip_position.w == 0.0f)
+                !finite(vertex.texcoord0) || !finite(vertex.texcoord2) ||
+                vertex.clip_position.w == 0.0f)
                 return {Error::InvalidDraw, "PICA output vertex contains an invalid float24 value"};
         }
 
-    bool texture_used = false;
+    bool texture0_used = false;
+    bool procedural_texture_used = false;
     for (const auto& stage : state.tev) {
         if ((stage.color_multiplier != 1 && stage.color_multiplier != 2 &&
              stage.color_multiplier != 4) ||
@@ -107,10 +109,10 @@ ValidationResult validate(const Frame& frame) {
         if (!finite(stage.constant))
             return {Error::InvalidDraw, "PICA TEV constant is invalid"};
         for (const auto source : stage.color_source)
-            if (!in_range(source, TevSource::Previous))
+            if (!in_range(source, TevSource::ProceduralTexture))
                 return {Error::InvalidDraw, "PICA TEV color source is invalid"};
         for (const auto source : stage.alpha_source)
-            if (!in_range(source, TevSource::Previous))
+            if (!in_range(source, TevSource::ProceduralTexture))
                 return {Error::InvalidDraw, "PICA TEV alpha source is invalid"};
         for (const auto modifier : stage.color_modifier)
             if (!in_range(modifier, ColorModifier::OneMinusSourceBlue))
@@ -118,11 +120,14 @@ ValidationResult validate(const Frame& frame) {
         for (const auto modifier : stage.alpha_modifier)
             if (!in_range(modifier, AlphaModifier::OneMinusSourceBlue))
                 return {Error::InvalidDraw, "PICA TEV alpha modifier is invalid"};
-        texture_used |= uses_texture(stage);
+        texture0_used |= uses_source(stage, TevSource::Texture0);
+        procedural_texture_used |= uses_source(stage, TevSource::ProceduralTexture);
     }
 
-    if (texture_used && !draw.texture0)
+    if (texture0_used && !draw.texture0)
         return {Error::InvalidDraw, "PICA TEV reads texture0 but none was supplied"};
+    if (procedural_texture_used && !draw.procedural_texture)
+        return {Error::InvalidDraw, "PICA TEV reads procedural texture3 but no LUT was supplied"};
     if (draw.texture0) {
         const auto& texture = *draw.texture0;
         if (!texture.width || !texture.height || texture.row_bytes < texture.width * 4ULL ||
@@ -132,6 +137,18 @@ ValidationResult validate(const Frame& frame) {
             !in_range(texture.wrap_s, WrapMode::MirroredRepeat) ||
             !in_range(texture.wrap_t, WrapMode::MirroredRepeat))
             return {Error::InvalidDraw, "PICA texture sampler state is invalid"};
+    }
+    if (draw.procedural_texture) {
+        for (const Float2 entry : draw.procedural_texture->color_map)
+            if (!finite(entry))
+                return {Error::InvalidDraw, "PICA procedural color map contains an invalid value"};
+        for (const Float4 entry : draw.procedural_texture->color)
+            if (!finite(entry))
+                return {Error::InvalidDraw, "PICA procedural color LUT contains an invalid value"};
+        for (const Float4 entry : draw.procedural_texture->color_difference)
+            if (!finite(entry))
+                return {Error::InvalidDraw,
+                        "PICA procedural color difference LUT contains an invalid value"};
     }
     }
     return {};

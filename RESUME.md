@@ -2,6 +2,21 @@
 
 ## Implementazione AOT + Metal in corso — 2026-09-15
 
+Ultimo checkpoint verificato: suite completa 41/41 PASS. Metal diretto completa 300
+video frame con 8167 submission e 245 frame non neri; cattura 'Formatting complete.'
+leggibile e orientata correttamente, confrontata con Vulkan. Proctex osservata
+implementata, mirror diagnosticato con confronto envMetal0 e corretto nel mapping
+Target; nessuna prova gameplay. Catture/provenance in .local/pica-metal-core-smoke.
+Helper Metal ora applica realmente la patch e verifica flag CMake effettivi.
+Discovery AOT automatica: max 8 iterazioni finite, prima tranche 785s PASS; sette
+nuovi descrittori compilati, ultimo 0x104614 ARM/FPSCR03000000 pendente. Ultimo
+smoke identity true, 318331 callback, zero frame, nessun timeout. Manifest locale
+.local/aot-offline-batch-20260915-r2/offline-expansion.json. Non interpretare entry
+aggiuntive come garanzia di avanzamento monotono del grafo limitato a 1024 blocchi.
+Prossimo passo autorizzato a Sol: core combinato AOT+Metal, selezione esplicita e
+smoke controllato prima video. App installata e salvataggi privati invariati.
+Le sezioni successive sono checkpoint storici.
+
 Checkpoint più recente: AOT dopo otto iterazioni offline, 18/18 test; aggiunti
 UQSUB8 e Mul32 con confronti differenziali. Grafo cap1024/fetch65536. Smoke fresco
 con identità verificata: MissingBlock PC0x104618 CPSR20000010 FPSCR03000000,

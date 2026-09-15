@@ -23,6 +23,7 @@ struct OutputVertex {
     Float4 clip_position{};
     Float4 primary_color{};
     Float2 texcoord0{};
+    Float2 texcoord2{};
 };
 
 enum class TevSource : uint32_t {
@@ -31,6 +32,7 @@ enum class TevSource : uint32_t {
     PreviousBuffer,
     Constant,
     Previous,
+    ProceduralTexture,
 };
 
 enum class ColorModifier : uint32_t {
@@ -145,12 +147,20 @@ struct TextureRgba8 {
     WrapMode wrap_t{WrapMode::ClampToEdge};
 };
 
+// Owned snapshot of the PICA procedural texture LUTs supported by this slice.
+// Color and difference entries remain float until the TEV stage rounds its result.
+struct ProceduralTexture {
+    std::array<Float2, 128> color_map{};
+    std::array<Float4, 256> color{};
+    std::array<Float4, 256> color_difference{};
+};
+
 struct DrawState {
     int32_t viewport_x{};
     int32_t viewport_y{};
     uint32_t viewport_width{};
     uint32_t viewport_height{};
-    bool flip_viewport_y{};
+    bool invert_ndc_y{};
     bool scissor_enable{};
     uint32_t scissor_x{};
     uint32_t scissor_y{};
@@ -190,6 +200,7 @@ struct Draw {
     std::span<const OutputVertex> vertices{};
     DrawState state{};
     const TextureRgba8* texture0{};
+    const ProceduralTexture* procedural_texture{};
 };
 
 struct Frame {

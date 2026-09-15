@@ -23,6 +23,38 @@ def run(*arguments, cwd=ROOT, capture_output=False):
                           capture_output=capture_output, text=capture_output)
 
 
+def apply_adapter_patch(source):
+    command = ["patch", "--batch", "--forward", "--fuzz=0", "-p1", "-i", str(PATCH)]
+    check = subprocess.run([*command, "--dry-run"], cwd=source, capture_output=True, text=True)
+    if check.returncode != 0:
+        raise RuntimeError("experimental PICA Metal patch does not match the pinned source")
+    run(*command, cwd=source)
+    cmake = (source / "CMakeLists.txt").read_text()
+    renderer = (source / "src/video_core/renderer_software/renderer_software.cpp").read_text()
+    if ("option(ENABLE_MH4U_PICA_METAL" not in cmake or
+        "MH4U_PICA_METAL_CORE" not in renderer):
+        raise RuntimeError("experimental PICA Metal patch did not modify the candidate source")
+
+
+def verify_cache(build):
+    entries = {}
+    for line in (build / "CMakeCache.txt").read_text().splitlines():
+        if not line.startswith("//") and not line.startswith("#") and ":" in line and "=" in line:
+            name, value = line.split("=", 1)
+            entries[name.split(":", 1)[0]] = value
+    required = {
+        "ENABLE_MH4U_PICA_METAL": "ON",
+        "ENABLE_BUILTIN_KEYBLOB": "OFF",
+        "ENABLE_VULKAN": "OFF",
+        "ENABLE_OPENGL": "OFF",
+        "ENABLE_SOFTWARE_RENDERER": "ON",
+    }
+    missing = [f"{name}={value}" for name, value in required.items()
+               if entries.get(name) != value]
+    if missing:
+        raise RuntimeError("candidate CMake cache is missing required flags: " + ", ".join(missing))
+
+
 def verify_source_export():
     provenance_path = ROOT / ".local/core-provenance.json"
     if not provenance_path.is_file():
@@ -60,8 +92,7 @@ def main():
     shutil.copytree(EXPORT, args.source, symlinks=True)
     if (args.source / EXCLUDED_KEY_HEADER).exists():
         raise RuntimeError("copied candidate unexpectedly contains the excluded key header")
-    run("git", "apply", "--check", PATCH, cwd=args.source)
-    run("git", "apply", PATCH, cwd=args.source)
+    apply_adapter_patch(args.source)
     openssl = run("brew", "--prefix", "openssl@3", capture_output=True).stdout.strip()
     configure = [
         "cmake", "-S", args.source, "-B", args.build, "-G", "Ninja",
@@ -77,6 +108,7 @@ def main():
         "-DENABLE_MH4U_PICA_METAL=ON", f"-DMH4U_PICA_METAL_ROOT={ROOT}",
     ]
     run(*configure)
+    verify_cache(args.build)
     run("cmake", "--build", args.build, "--target", "azahar_libretro", "-j", args.jobs)
     provenance = {
         "source_export": str(EXPORT),

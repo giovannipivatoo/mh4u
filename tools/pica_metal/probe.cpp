@@ -20,6 +20,7 @@ DrawState state(uint32_t width, uint32_t height, Float4 color, float depth) {
     DrawState result{};
     result.viewport_width = width;
     result.viewport_height = height;
+    result.invert_ndc_y = true;
     result.depth_test_enable = true;
     result.depth_write_enable = true;
     result.depth_compare = CompareFunc::Less;
@@ -42,6 +43,12 @@ std::array<OutputVertex, 3> triangle(float z) {
     return {{{{-0.9f, -0.9f, z, 1.0f}, {1, 1, 1, 1}, {0.5f, 0.5f}},
              {{0.9f, -0.9f, z, 1.0f}, {1, 1, 1, 1}, {0.5f, 0.5f}},
              {{0.0f, 0.9f, z, 1.0f}, {1, 1, 1, 1}, {0.5f, 0.5f}}}};
+}
+
+std::array<OutputVertex, 3> positive_y_triangle(float z) {
+    return {{{{-0.5f, 0.2f, z, 1.0f}, {1, 1, 1, 1}},
+             {{0.5f, 0.2f, z, 1.0f}, {1, 1, 1, 1}},
+             {{0.0f, 0.8f, z, 1.0f}, {1, 1, 1, 1}}}};
 }
 
 const uint8_t* pixel(const Image& image, uint32_t x, uint32_t y) {
@@ -90,6 +97,16 @@ int main() {
            "a later, occluded DrawTriangles batch replaced the retained depth/color target");
     expect(depth.image, 0, 0, {0, 0, 0, 255}, "frame clear or viewport mapping is wrong");
 
+    const auto orientation_vertices = positive_y_triangle(-0.25f);
+    const std::array orientation_draws{Draw{orientation_vertices, front_state, nullptr}};
+    const RenderResult orientation = renderer.render(
+        Frame{size, size, {0, 0, 0, 1}, 1.0f, 24, orientation_draws});
+    if (!orientation) fail(orientation.message.c_str());
+    expect(orientation.image, 32, 45, {255, 0, 0, 255},
+           "Metal NDC Y did not map to increasing PICA screen Y");
+    expect(orientation.image, 32, 15, {0, 0, 0, 255},
+           "PICA screen Y orientation was vertically mirrored");
+
     const std::array<uint8_t, 4> texel{200, 101, 50, 255};
     const TextureRgba8 texture{1, 1, 4, texel};
     auto tev_state = state(size, size, {200.0f / 255.0f, 200.0f / 255.0f,
@@ -119,6 +136,41 @@ int main() {
     if (!linear) fail(linear.message.c_str());
     expect(linear.image, 32, 32, {1, 0, 0, 255},
            "linear texture sample was byte-rounded before the TEV combiner");
+
+    ProceduralTexture procedural{};
+    for (size_t i = 0; i < procedural.color_map.size(); ++i)
+        procedural.color_map[i] = {static_cast<float>(i) / 128.0f, 1.0f / 128.0f};
+    procedural.color[127] = {17.0f / 255.0f, 33.0f / 255.0f, 65.0f / 255.0f, 1.0f};
+    auto endpoint_vertices = front_vertices;
+    for (auto& vertex : endpoint_vertices) vertex.texcoord2 = {1.0f, 0.75f};
+    auto endpoint_state = state(size, size, {}, 0.25f);
+    endpoint_state.tev[0].color_source[0] = TevSource::ProceduralTexture;
+    endpoint_state.tev[0].alpha_source[0] = TevSource::ProceduralTexture;
+    const std::array endpoint_draws{
+        Draw{endpoint_vertices, endpoint_state, nullptr, &procedural}};
+    const RenderResult endpoint = renderer.render(
+        Frame{size, size, {0, 0, 0, 1}, 1.0f, 24, endpoint_draws});
+    if (!endpoint) fail(endpoint.message.c_str());
+    expect(endpoint.image, 32, 32, {17, 33, 65, 255},
+           "procedural texture endpoint u=1 did not use map[127] plus its difference");
+
+    procedural.color[10] = {200.0f / 255.0f, 0, 0, 1};
+    procedural.color_difference[10] = {-18.0f / 255.0f, 0, 0, 0};
+    auto difference_vertices = front_vertices;
+    for (auto& vertex : difference_vertices)
+        vertex.texcoord2 = {10.25f / 127.0f, 0.25f};
+    auto difference_state = state(size, size, {204.0f / 255.0f, 1, 1, 1}, 0.25f);
+    difference_state.tev[0].color_source[0] = TevSource::ProceduralTexture;
+    difference_state.tev[0].color_source[1] = TevSource::Constant;
+    difference_state.tev[0].color_operation = TevOperation::Modulate;
+    difference_state.tev[0].alpha_source[0] = TevSource::ProceduralTexture;
+    const std::array difference_draws{
+        Draw{difference_vertices, difference_state, nullptr, &procedural}};
+    const RenderResult difference = renderer.render(
+        Frame{size, size, {0, 0, 0, 1}, 1.0f, 24, difference_draws});
+    if (!difference) fail(difference.message.c_str());
+    expect(difference.image, 32, 32, {156, 0, 0, 255},
+           "procedural signed difference or post-combiner TEV rounding is wrong");
 
     auto alpha_state = state(size, size, {0, 0, 1, 153.0f / 255.0f}, 0.5f);
     alpha_state.depth_compare = CompareFunc::Equal;
@@ -227,8 +279,10 @@ int main() {
     std::puts("{\"mode\":\"pica-metal-golden\",\"passed\":true,"
               "\"scope\":\"post-PICA-vertex-output rasterization\","
               "\"draw_batches\":2,\"depth_retained\":true,"
+              "\"pica_screen_y_orientation\":true,"
               "\"texture0_rgba8\":true,\"tev_accelerated\":157,"
               "\"tev_software_reference\":156,\"linear_sample_float\":true,"
+              "\"procedural_texture_observed_profile\":true,"
               "\"persistent_target\":true,"
               "\"rgba8_import\":true,\"depth_stencil_snapshot\":true,"
               "\"game_integrated\":false}");

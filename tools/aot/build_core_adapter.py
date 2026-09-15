@@ -20,6 +20,23 @@ PATCH = ROOT / "patches/experimental-aot-core-adapter.patch"
 EXPECTED_CODE_SHA256 = "63940d7ef1fecc119f9fb820f5f6a2cf2f2a5549e4a70f00319fbd6c9c1ad8dc"
 EXPECTED_CORE_COMMIT = "26e608f6fa292b27cda0ae8c84e148d17600a5e6"
 EXCLUDED_KEY_BLOB = "src/core/hw/default_keys.h"
+DEFAULT_ENTRY_DESCRIPTORS = (
+    "0x10b6f0,0x10,0x03000000",
+    "0x1067ec,0x10,0x03000000",
+    "0x109f64,0x10,0x03000000",
+    "0x10000c,0x10,0x03000000",
+    "0x2fd100,0x30,0x03000000",
+    "0x2fd4f4,0x30,0x03000000",
+    "0x2fd2ec,0x30,0x03000000",
+    "0x10461c,0x10,0x03000000",
+    "0x104668,0x10,0x03000000",
+)
+
+
+def below_local(path: pathlib.Path) -> bool:
+    local = (ROOT / ".local").resolve()
+    resolved = path.resolve()
+    return resolved != local and local in resolved.parents
 
 
 def run(*args, cwd=ROOT, capture=False):
@@ -45,9 +62,15 @@ def main() -> int:
     parser.add_argument("--generator", default=ROOT / ".local/aot-candidate/mh4u-aot-generator",
                         type=pathlib.Path)
     parser.add_argument("--jobs", type=int, default=8)
+    parser.add_argument("--artifact", default=ARTIFACT, type=pathlib.Path)
+    parser.add_argument("--manifest", default=MANIFEST, type=pathlib.Path)
+    parser.add_argument("--entry-descriptor", action="append", default=[])
     args = parser.parse_args()
     if args.jobs <= 0:
         parser.error("--jobs must be positive")
+    if (not below_local(args.artifact) or args.artifact.suffix != ".cpp" or
+            not below_local(args.manifest) or args.manifest.suffix != ".json"):
+        parser.error("--artifact and --manifest must be .cpp/.json files below .local")
     if (BASE_SOURCE / EXCLUDED_KEY_BLOB).exists():
         raise RuntimeError("refusing source tree containing the excluded built-in key header")
     provenance = json.loads((ROOT / ".local/core-provenance.json").read_text())
@@ -63,21 +86,17 @@ def main() -> int:
     digest = hashlib.sha256(CODE.read_bytes()).hexdigest()
     if digest != EXPECTED_CODE_SHA256:
         raise RuntimeError(f"title code SHA-256 mismatch: {digest}")
-    run(args.generator, "--binary", CODE, "--base", "0x100000", "--pc", "0x100000",
+    generator_command = [
+        args.generator, "--binary", CODE, "--base", "0x100000", "--pc", "0x100000",
         "--cpsr", "0x10", "--fpscr", "0x03c00010", "--max-blocks", "1024",
         "--max-instructions", "65536", "--max-dispatch-steps", "1000000",
         "--continue-after-svc", "1",
-        "--entry-descriptor", "0x10b6f0,0x10,0x03000000",
-        "--entry-descriptor", "0x1067ec,0x10,0x03000000",
-        "--entry-descriptor", "0x109f64,0x10,0x03000000",
-        "--entry-descriptor", "0x10000c,0x10,0x03000000",
-        "--entry-descriptor", "0x2fd100,0x30,0x03000000",
-        "--entry-descriptor", "0x2fd4f4,0x30,0x03000000",
-        "--entry-descriptor", "0x2fd2ec,0x30,0x03000000",
-        "--entry-descriptor", "0x10461c,0x10,0x03000000",
-        "--entry-descriptor", "0x104668,0x10,0x03000000",
-        "--input-sha256", digest, "--artifact-root", ROOT / ".local",
-        "--output", ARTIFACT, "--manifest", MANIFEST)
+    ]
+    for descriptor in (*DEFAULT_ENTRY_DESCRIPTORS, *args.entry_descriptor):
+        generator_command.extend(("--entry-descriptor", descriptor))
+    generator_command.extend(("--input-sha256", digest, "--artifact-root", ROOT / ".local",
+                              "--output", args.artifact, "--manifest", args.manifest))
+    run(*generator_command)
     openssl = run("brew", "--prefix", "openssl@3", capture=True).stdout.strip()
     run("cmake", "-S", CANDIDATE_SOURCE, "-B", BUILD, "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_OSX_ARCHITECTURES=arm64",
@@ -86,7 +105,7 @@ def main() -> int:
         "-DENABLE_BUILTIN_KEYBLOB=OFF", "-DENABLE_TESTS=OFF", "-DENABLE_LTO=OFF",
         "-DCITRA_WARNINGS_AS_ERRORS=OFF", "-DUSE_SYSTEM_OPENSSL=ON",
         f"-DOPENSSL_ROOT_DIR={openssl}", "-DENABLE_MH4U_AOT=ON",
-        f"-DMH4U_AOT_RUNTIME_ROOT={ROOT}", f"-DMH4U_AOT_ARTIFACT={ARTIFACT}")
+        f"-DMH4U_AOT_RUNTIME_ROOT={ROOT}", f"-DMH4U_AOT_ARTIFACT={args.artifact}")
     run("cmake", "--build", BUILD, "--target", "citra_libretro", "-j", args.jobs)
     print(BUILD / "bin/Release/azahar_libretro.dylib")
     return 0

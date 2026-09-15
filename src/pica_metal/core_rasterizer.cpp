@@ -63,6 +63,7 @@ struct CoreRasterizer::Impl {
     uint64_t metal_draws{};
     uint64_t submissions{};
     bool logged_non_rgba_texture{};
+    bool logged_procedural_texture{};
     std::string fatal{};
 
     Impl(Memory::MemorySystem& memory_, Pica::PicaCore& pica_) : memory{memory_}, pica{pica_} {
@@ -407,13 +408,40 @@ void CoreRasterizer::DrawTriangles() {
         texture = decoded_texture.view();
         texture_pointer = &texture;
     }
+    AzaharProceduralTexture decoded_procedural{};
+    const ProceduralTexture* procedural_pointer = nullptr;
+    if (regs.texturing.main_config.texture3_enable) {
+        std::array<uint32_t, 128> color_map{};
+        std::array<uint32_t, 256> color{};
+        std::array<uint32_t, 256> color_difference{};
+        for (size_t i = 0; i < color_map.size(); ++i)
+            color_map[i] = impl_->pica.proctex.color_map_table[i].raw;
+        for (size_t i = 0; i < color.size(); ++i) {
+            color[i] = impl_->pica.proctex.color_table[i].raw;
+            color_difference[i] = impl_->pica.proctex.color_diff_table[i].raw;
+        }
+        const ValidationResult snapshot = decode_azahar_procedural_texture(
+            color_map, color, color_difference, decoded_procedural);
+        if (!snapshot) {
+            impl_->fail("core adapter failed procedural texture snapshot: " + snapshot.message);
+            impl_->vertices.clear();
+            return;
+        }
+        procedural_pointer = &decoded_procedural.snapshot;
+    }
     AzaharDraw converted{};
-    const ValidationResult decoded = decode_azahar_draw(regs, impl_->vertices, texture_pointer,
-                                                         converted);
+    const ValidationResult decoded = decode_azahar_draw(
+        regs, impl_->vertices, texture_pointer, procedural_pointer, converted);
     impl_->vertices.clear();
     if (!decoded) {
         impl_->fail("core adapter rejected live PICA state: " + decoded.message);
         return;
+    }
+    if (converted.procedural_texture_enabled && !impl_->logged_procedural_texture) {
+        impl_->logged_procedural_texture = true;
+        LOG_INFO(Render,
+                 "PICA Metal procedural texture3: coord=2 clamp=edge map=U filter=linear "
+                 "width=128 offset=0");
     }
     if (!impl_->ensure_target(regs)) return;
     const Draw draw = converted.view();

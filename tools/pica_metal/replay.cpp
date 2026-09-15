@@ -230,7 +230,7 @@ int main(int argc, char** argv) {
                     texture = decode_texture0(regs, encoded_texture, decoded_texture);
                     texture_pointer = &texture;
                 }
-                result = decode_azahar_draw(regs, vertices, texture_pointer, converted);
+                result = decode_azahar_draw(regs, vertices, texture_pointer, nullptr, converted);
             }
             result_error = result.error;
             message = result.message;

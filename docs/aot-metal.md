@@ -41,9 +41,10 @@ python3 tools/aot/core_smoke.py \
 Use a fresh state directory on every run. This smoke specifically checks the
 current expected missing-block stop, not successful frame production. The core
 verifies the translated instruction words before executing and reaches the real
-HLE SVC. The current 512-block artifact includes the observed FPSCR mode change;
-it executes another 43 blocks after that SVC, then stops at missing PC
-`0x001067ec` without a frame or timeout. Its AOT build
+HLE SVC. The current 1,024-block artifact includes observed ARM/Thumb entries
+and the FPSCR mode change. After eight offline compile/run iterations it executes
+five AOT batches, then stops at missing PC `0x00104618` without a frame or timeout.
+Its AOT build
 forces the CPU adapter; the ordinary host's `cpu: jit` option label is not evidence
 of the CPU actually selected inside that experimental core. The smoke records
 that distinction and requires AOT identity/exit telemetry.
@@ -79,7 +80,7 @@ That test supplies a synthetic memory mapping and SVC callback; it does not prov
 kernel boot, gameplay or complete code coverage. Static graph discovery stops at
 the first discovered SVC by default. The core build enables bounded continuation
 and accepts explicit additional PC/CPSR/FPSCR entry descriptors. Its manifest
-records 512 blocks, a remaining frontier of 62 entries and 113 unresolved indirect
+records 1,024 blocks, a remaining frontier of 134 entries and 225 unresolved indirect
 points; coverage remains incomplete. The initial entry uses FPSCR mode
 `0x03c00000`; the observed continuation at `0x0010b6f0` uses `0x03000000`.
 Additional differential tests cover exclusive accesses, FPSCR state changes,
@@ -93,7 +94,7 @@ The isolated game-batch replay now accepts the first eight captured batches,
 including bounded texture data read after a synchronous GPU cache flush. These
 draws are black or nearly black and use explicit synthetic initial clears; this
 is not an image-equivalence test. A later eight-batch window encounters ETC1A4 and
-procedural-texture states that remain unsupported. Persistent render targets and
+procedural-texture states that remain unsupported by the replay. Persistent render targets and
 an original initial state are needed before comparing a complete draw sequence.
 
 The Metal API exposes persistent targets: create with an explicit clear or
@@ -107,10 +108,25 @@ The experimental core adapter now maps a guest color/depth pair to a persistent
 target, tracks cached guest pages and writes attachments back in PICA tiled format.
 It reuses the software RAM presentation path, with CPU PICA vertex processing;
 there is no Vulkan rasterization fallback when Metal is selected. A fresh-state
-live run now submits 54 real game draws to Metal and produces 52 black video
-frames. The next slice decodes the encountered ETC1A4 texture (512 × 256,
-131,072 encoded bytes) and stops on procedural Texture3. This proves live GPU submission,
-not a correct visible game screen or gameplay.
+live run now completes 300 video frames with 8,167 Metal draw submissions and
+245 nonblack frames. The captured “Formatting complete.” screen is readable and
+has the same orientation and layout as a fresh Vulkan reference run. The RGB
+comparison still differs (mean absolute error 0.837 on a 0–255 scale, maximum 50);
+this is a visible boot-screen check, not image equivalence or gameplay validation.
+
+The core decodes the encountered ETC1A4 texture and implements the observed
+procedural Texture3 profile: coordinate2, edge clamp, U mapping, linear filtering,
+width128/offset0, no noise, separate alpha or shifts. LUT values and signed
+differences are copied from PICA state into owned snapshots; interpolation remains
+floating point through the TEV operation. Other procedural configurations fail
+explicitly. Texture1/2 enable bits can be inert; actual TEV reads from those units
+remain unsupported.
+
+A mirrored first capture exposed a mismatch between Metal NDC Y and the target's
+PICA screen coordinates. The adapter now consistently maps to the normalized
+target, including viewport/scissor and culling. Asymmetric GPU/adapter fixtures
+cover the correction. Guest tiled import/export and the shared presenter were
+already correct and retain their behavior.
 
 A candidate crash was isolated to inconsistent `RendererSoftware` layout across
 translation units. A conditional member moved `ScreenInfo` in one compilation
@@ -125,8 +141,8 @@ The next integration gates are:
 2. Validate the AOT kernel adapter across longer bounded runs, context switches
    and memory operations. Unsupported code must stop an AOT-only run;
    a hybrid fallback, if introduced, must be named and counted separately.
-3. Add the graphics states encountered by the live core, including additional
-   procedural Texture3, and compare complete frames against the reference.
+3. Add the graphics states encountered by the live core, beyond the observed
+   procedural Texture3 profile, and compare complete frames against the reference.
 4. Combine AOT and Metal once each backend advances independently, then validate
    finite game runs, ordinary saves and representative gameplay. Keep the working
    runtime as a reference and
@@ -135,7 +151,7 @@ The next integration gates are:
 There is no measured performance improvement or complete AOT/Metal game support
 claim at this stage.
 
-Latest bounded AOT coverage checkpoint: eight offline compile/run iterations,
+The reproducible default-helper AOT checkpoint: eight offline compile/run iterations,
 1,024-block graph cap and 65,536-fetch cap. Added UQSUB8 and low-word multiply,
 both checked against Dynarmic with differential edge matrices; the negative
 fixture still rejects a genuinely unsupported instruction without partial output.
@@ -148,5 +164,54 @@ Texture decoding now accepts all 14 pinned PICA formats through a shared core/te
 boundary with exact input spans and separate 4 MiB encoded/decoded limits. Linear
 samples remain floating point until TEV stage quantization, verified with a golden
 case that distinguishes premature rounding. Three PICA tests pass on the GPU.
-The trace replay still rejects non-RGBA8 input; new-format evidence comes from
+The trace replay still rejects non-RGBA8 input and lacks procedural LUT snapshots; new-format evidence comes from
 the decoder tests and live core, not replayed traces.
+
+## Bounded offline coverage discovery
+
+`tools/aot/expand_core_graph.py` performs at most eight compile/run iterations:
+
+```sh
+python3 tools/aot/expand_core_graph.py \
+  --output-dir .local/aot-offline-check --iterations 8 --total-timeout 1200
+```
+
+Every launch uses a fresh local profile. The tool accepts only an identity-verified,
+well-formed missing-block result from the expected normal error exit. It normalizes
+PC/CPSR/FPSCR descriptors and stops on duplicates, timeouts, invalid reports or
+unsupported IR. The graph/fetch caps remain 1,024/65,536. No compiler runs inside
+the game process and no fallback executes missing code.
+
+The local manifest records commands, input and core hashes, compiled descriptors
+and the last pending descriptor separately. A descriptor observed in the final
+iteration is not yet included in the compiled artifact. Logs and generated source
+stay under `.local/`.
+
+The first automated batch completed eight valid iterations in 785 seconds. Seven
+new descriptors are compiled into iteration08; the final observed ARM descriptor
+`0x00104614` (CPSR `0x20000010`, FPSCR `0x03000000`) is pending. The final core
+verifies identity and stops after 318,331 callbacks, without video or timeout.
+Its 1,024-block artifact has 17 entry descriptors, 107 frontier entries and 242
+unresolved indirect points. A bounded static graph can change coverage as entry
+priorities change; descriptor count alone does not prove monotonic runtime progress.
+The complete candidate CMake suite passes 41/41 tests, including input and device
+checks. Detailed batch manifests remain local.
+
+## Combined-core integration contract
+
+A combined candidate must enable both experimental adapters in a fresh local
+source export, with the built-in key blob, Vulkan and OpenGL disabled. The AOT
+factory must select `ARM_Aot` for every guest CPU. Metal uses the RAM presenter
+selected by `--renderer software`, but requires `MH4U_PICA_METAL_CORE=1` to select
+the actual `CoreRasterizer`; a build flag alone does not prove that selection.
+The combined launcher must verify both backend selections from runtime evidence.
+
+Both patches modify the core error loop and libretro shutdown path. Their merged
+form must preserve a single sticky fatal status, then shut down and return instead
+of waiting indefinitely for a frame. AOT memory accesses already go through the
+pinned MemorySystem cache hooks, including exclusive writes; they must retain that
+path so Metal guest-memory coherence also applies.
+
+A combined build and fresh-state missing-block smoke can check linking, backend
+selection and bounded shutdown now. Since AOT still stops before video, such a
+result cannot demonstrate CPU/GPU cooperation on rendered game frames.

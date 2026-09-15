@@ -29,9 +29,16 @@ bool source(Pica::TexturingRegs::TevStageConfig::Source value, TevSource& result
     case Source::PreviousBuffer: result = TevSource::PreviousBuffer; return true;
     case Source::Constant: result = TevSource::Constant; return true;
     case Source::Previous: result = TevSource::Previous; return true;
+    case Source::Texture3: result = TevSource::ProceduralTexture; return true;
     default: return false;
     }
     return false;
+}
+
+int32_t sign_extend(uint32_t value, uint32_t bits) {
+    const uint32_t sign = 1U << (bits - 1);
+    return value & sign ? static_cast<int32_t>(value) - static_cast<int32_t>(1U << bits)
+                        : static_cast<int32_t>(value);
 }
 
 bool color_modifier(Pica::TexturingRegs::TevStageConfig::ColorModifier value,
@@ -143,9 +150,43 @@ ValidationResult decode_azahar_texture0(const Pica::RegsInternal& regs,
     return {};
 }
 
+ValidationResult decode_azahar_procedural_texture(
+    std::span<const uint32_t, 128> color_map_raw,
+    std::span<const uint32_t, 256> color_raw,
+    std::span<const uint32_t, 256> color_difference_raw,
+    AzaharProceduralTexture& output) {
+    output = {};
+    for (size_t i = 0; i < color_map_raw.size(); ++i) {
+        const uint32_t raw = color_map_raw[i];
+        output.snapshot.color_map[i] = {
+            static_cast<float>(raw & 0xfff) / 4095.0f,
+            static_cast<float>(sign_extend((raw >> 12) & 0xfff, 12)) / 4095.0f,
+        };
+    }
+    for (size_t i = 0; i < color_raw.size(); ++i) {
+        const uint32_t color = color_raw[i];
+        const uint32_t difference = color_difference_raw[i];
+        output.snapshot.color[i] = {
+            static_cast<float>(color & 0xff) / 255.0f,
+            static_cast<float>((color >> 8) & 0xff) / 255.0f,
+            static_cast<float>((color >> 16) & 0xff) / 255.0f,
+            static_cast<float>((color >> 24) & 0xff) / 255.0f,
+        };
+        output.snapshot.color_difference[i] = {
+            static_cast<float>(sign_extend(difference & 0xff, 8) * 2) / 255.0f,
+            static_cast<float>(sign_extend((difference >> 8) & 0xff, 8) * 2) / 255.0f,
+            static_cast<float>(sign_extend((difference >> 16) & 0xff, 8) * 2) / 255.0f,
+            static_cast<float>(sign_extend((difference >> 24) & 0xff, 8) * 2) / 255.0f,
+        };
+    }
+    return {};
+}
+
 ValidationResult decode_azahar_draw(const Pica::RegsInternal& regs,
                                     std::span<const Pica::OutputVertex> vertices,
-                                    const TextureRgba8* texture0, AzaharDraw& output) {
+                                    const TextureRgba8* texture0,
+                                    const ProceduralTexture* procedural_texture,
+                                    AzaharDraw& output) {
     using Framebuffer = Pica::FramebufferRegs;
     using Texturing = Pica::TexturingRegs;
     const auto& fb = regs.framebuffer;
@@ -179,13 +220,24 @@ ValidationResult decode_azahar_draw(const Pica::RegsInternal& regs,
         return unsupported("PICA W-buffering is not implemented");
     if (regs.texturing.fragment_lighting_enable)
         return unsupported("PICA fragment lighting is not implemented");
-    if (regs.texturing.main_config.texture3_enable)
-        return unsupported("PICA procedural texture3 is not implemented");
+    if (regs.texturing.main_config.texture3_enable) {
+        if (regs.texturing.main_config.texture3_coordinates != 2 ||
+            regs.texturing.proctex.u_clamp != Texturing::ProcTexClamp::ToEdge ||
+            regs.texturing.proctex.v_clamp != Texturing::ProcTexClamp::ToEdge ||
+            regs.texturing.proctex.color_combiner != Texturing::ProcTexCombiner::U ||
+            regs.texturing.proctex.alpha_combiner != Texturing::ProcTexCombiner::U ||
+            regs.texturing.proctex.separate_alpha || regs.texturing.proctex.noise_enable ||
+            regs.texturing.proctex.u_shift != Texturing::ProcTexShift::None ||
+            regs.texturing.proctex.v_shift != Texturing::ProcTexShift::None ||
+            regs.texturing.proctex_lut.filter != Texturing::ProcTexFilter::Linear ||
+            regs.texturing.proctex_lut.width != 128 ||
+            regs.texturing.proctex_lut_offset.level0 != 0)
+            return unsupported("PICA procedural texture3 configuration is unsupported");
+        if (!procedural_texture)
+            return {Error::InvalidDraw, "enabled PICA procedural texture3 has no LUT snapshot"};
+    }
     if (regs.texturing.fog_mode != Texturing::FogMode::None)
         return unsupported("PICA fog and gas are not implemented");
-    if (regs.texturing.main_config.texture1_enable || regs.texturing.main_config.texture2_enable)
-        return unsupported("PICA texture units 1 and 2 are not implemented");
-
     output = {};
     output.target_width = fb.framebuffer.GetWidth();
     output.target_height = fb.framebuffer.GetHeight();
@@ -200,17 +252,18 @@ ValidationResult decode_azahar_draw(const Pica::RegsInternal& regs,
             {vertex.color.x.ToFloat32(), vertex.color.y.ToFloat32(), vertex.color.z.ToFloat32(),
              vertex.color.w.ToFloat32()},
             {vertex.tc0.x.ToFloat32(), vertex.tc0.y.ToFloat32()},
+            {vertex.tc2.x.ToFloat32(), vertex.tc2.y.ToFloat32()},
         });
     }
 
     const auto viewport = regs.rasterizer.GetViewportRect();
     output.state.viewport_x = viewport.left;
-    output.state.viewport_y = fb.framebuffer.IsFlipped()
-                                  ? static_cast<int32_t>(fb.framebuffer.GetHeight()) - viewport.top
-                                  : viewport.bottom;
+    output.state.viewport_y = viewport.bottom;
     output.state.viewport_width = viewport.GetWidth();
     output.state.viewport_height = viewport.GetHeight();
-    output.state.flip_viewport_y = fb.framebuffer.IsFlipped();
+    // PICA screen Y grows from NDC -1 to +1. Metal's positive viewport maps NDC
+    // +1 to its top row, so its vertex stage always inverts NDC Y.
+    output.state.invert_ndc_y = true;
     if (regs.rasterizer.scissor_test.mode == Pica::RasterizerRegs::ScissorMode::Include) {
         output.state.scissor_enable = true;
         output.state.scissor_x = regs.rasterizer.scissor_test.x1;
@@ -220,10 +273,7 @@ ValidationResult decode_azahar_draw(const Pica::RegsInternal& regs,
         output.state.scissor_height = regs.rasterizer.scissor_test.y2.Value() -
                                           regs.rasterizer.scissor_test.y1.Value() +
                                       1;
-        output.state.scissor_y = fb.framebuffer.IsFlipped()
-                                     ? fb.framebuffer.GetHeight() -
-                                           (regs.rasterizer.scissor_test.y2.Value() + 1)
-                                     : regs.rasterizer.scissor_test.y1.Value();
+        output.state.scissor_y = regs.rasterizer.scissor_test.y1;
     }
     output.state.blend_enable = merger.alphablend_enable;
     output.state.color_blend_equation =
@@ -325,6 +375,10 @@ ValidationResult decode_azahar_draw(const Pica::RegsInternal& regs,
                                      : TextureFilter::Nearest;
         if (texture0->width != config.width || texture0->height != config.height)
             return {Error::InvalidDraw, "decoded texture0 dimensions differ from PICA registers"};
+    }
+    if (regs.texturing.main_config.texture3_enable) {
+        output.procedural_texture = *procedural_texture;
+        output.procedural_texture_enabled = true;
     }
     return {};
 }
